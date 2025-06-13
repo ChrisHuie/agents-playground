@@ -1,6 +1,6 @@
 # 🤖 Agents Playground
 
-A comprehensive toolkit for experimenting with AI agents using Python. This project provides a structured foundation for building, testing, and deploying AI agents with support for multiple AI providers including OpenAI and Anthropic.
+A comprehensive toolkit for experimenting with AI agents using Python. This project provides a structured foundation for building, testing, and deploying AI agents with support for multiple AI providers including **Google Gemini 2.0 Flash**, OpenAI, and Anthropic.
 
 ## 🚀 Quick Start
 
@@ -118,6 +118,9 @@ print(f"Agent: {response}")
 Create a `.env` file with your API keys:
 
 ```bash
+# Required for Google Gemini agents (default)
+GOOGLE_API_KEY=your_google_api_key_here
+
 # Required for OpenAI agents
 OPENAI_API_KEY=your_openai_api_key_here
 
@@ -125,7 +128,7 @@ OPENAI_API_KEY=your_openai_api_key_here
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
 
 # Optional configurations
-DEFAULT_MODEL=gpt-3.5-turbo
+DEFAULT_MODEL=gemini-2.0-flash-exp
 TEMPERATURE=0.7
 MAX_TOKENS=1000
 ```
@@ -139,15 +142,47 @@ from agents_playground.agents import AgentConfig
 
 config = AgentConfig(
     name="MySpecialAgent",
-    model="gpt-4",
+    model="gemini-2.0-flash-exp",
     temperature=0.3,  # More deterministic responses
-    max_tokens=500    # Shorter responses
+    max_tokens=500,   # Shorter responses
+    provider="gemini"
 )
 ```
 
 ## 📚 Agent Examples
 
-### 1. Simple Echo Agent
+### 1. Google Gemini 2.0 Flash Agent
+
+```python
+import os
+from dotenv import load_dotenv
+from agents_playground.agents import GeminiAgent, AgentConfig
+
+# Load environment variables
+load_dotenv()
+
+class MyGeminiAgent(GeminiAgent):
+    def __init__(self, config: AgentConfig = None):
+        super().__init__(config or AgentConfig(name="GeminiBot"))
+
+# Usage
+agent = MyGeminiAgent()
+response = agent.respond("Explain quantum computing in simple terms")
+print(f"Gemini: {response}")
+
+# With custom configuration
+config = AgentConfig(
+    name="CreativeGemini",
+    model="gemini-2.0-flash-exp",
+    temperature=0.9,  # More creative responses
+    max_tokens=200
+)
+creative_agent = MyGeminiAgent(config)
+story = creative_agent.respond("Write a short story about a robot learning to paint")
+print(f"Creative Gemini: {story}")
+```
+
+### 2. Simple Echo Agent
 
 ```python
 from agents_playground.agents import BaseAgent
@@ -161,7 +196,7 @@ agent = EchoAgent()
 print(agent.respond("Hello!"))  # Output: You said: Hello!
 ```
 
-### 2. OpenAI Chat Agent
+### 3. OpenAI Chat Agent
 
 ```python
 import os
@@ -202,7 +237,7 @@ print(agent.respond("What's the weather like?"))
 print(agent.respond("What about tomorrow?"))  # Maintains context
 ```
 
-### 3. Anthropic Claude Agent
+### 4. Anthropic Claude Agent
 
 ```python
 import os
@@ -227,17 +262,25 @@ agent = ClaudeAgent(AgentConfig(name="Claude"))
 print(agent.respond("Explain quantum computing in simple terms"))
 ```
 
-### 4. Specialized Task Agent
+### 4. Specialized Task Agent with Gemini
 
 ```python
 import os
-from openai import OpenAI
+from dotenv import load_dotenv
+import google.generativeai as genai
 from agents_playground.agents import BaseAgent, AgentConfig
 
-class CodeReviewAgent(BaseAgent):
+load_dotenv()
+
+class GeminiCodeReviewAgent(BaseAgent):
     def __init__(self, config: AgentConfig = None):
-        self.config = config or AgentConfig(name="CodeReviewer")
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.config = config or AgentConfig(
+            name="GeminiCodeReviewer",
+            model="gemini-2.0-flash-exp",
+            temperature=0.3  # More deterministic for code review
+        )
+        genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+        self.model = genai.GenerativeModel(self.config.model)
         self.system_prompt = """You are an expert code reviewer. 
         Analyze the provided code and give constructive feedback on:
         - Code quality and style
@@ -246,18 +289,18 @@ class CodeReviewAgent(BaseAgent):
         - Best practices"""
     
     def respond(self, code: str) -> str:
-        response = self.client.chat.completions.create(
-            model=self.config.model,
-            messages=[
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": f"Please review this code:\n\n```\n{code}\n```"}
-            ],
-            temperature=0.3  # More deterministic for code review
+        prompt = f"{self.system_prompt}\n\nPlease review this code:\n\n```\n{code}\n```"
+        response = self.model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                temperature=self.config.temperature,
+                max_output_tokens=self.config.max_tokens
+            )
         )
-        return response.choices[0].message.content
+        return response.text
 
 # Usage
-agent = CodeReviewAgent()
+agent = GeminiCodeReviewAgent()
 code_to_review = """
 def calculate_sum(numbers):
     total = 0
