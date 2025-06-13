@@ -43,7 +43,7 @@ def demo_latest_release(agent):
     print("\n🚀 Analyzing Latest Releases")
     print("-" * 30)
     
-    repo = input("Enter repo shortcut (js, server, server-java, ios, android): ").strip()
+    repo = input("Enter repo shortcut (js, server-go, server-java, ios, android): ").strip()
     
     if repo:
         print(f"\n📊 Analyzing latest {repo} release...")

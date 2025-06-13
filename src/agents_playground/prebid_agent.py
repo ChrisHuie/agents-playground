@@ -14,7 +14,7 @@ class PrebidReleaseAgent(GitHubReleaseAgent):
     
     PREBID_REPOS = {
         "js": "prebid/Prebid.js",
-        "server": "prebid/prebid-server", 
+        "server-go": "prebid/prebid-server", 
         "server-java": "prebid/prebid-server-java",
         "ios": "prebid/prebid-mobile-ios",
         "android": "prebid/prebid-mobile-android"
@@ -27,15 +27,31 @@ class PrebidReleaseAgent(GitHubReleaseAgent):
             temperature=0.3
         ))
     
-    def respond(self, message: str) -> str:
+    def respond(self, message: str, summary_level: str = "executive") -> str:
         """Enhanced interface for Prebid repositories with shortcuts and latest tag support."""
         try:
             repo_name, release_tag = self._parse_prebid_input(message)
             analysis = self.analyze_release(repo_name, release_tag)
-            return self._format_analysis_response(analysis)
+            return self._format_analysis_response(analysis, summary_level)
             
         except Exception as e:
             return f"Error analyzing Prebid release: {str(e)}"
+    
+    def get_executive_summary(self, repo_input: str) -> str:
+        """Get executive-level summary for Prebid release."""
+        return self.respond(repo_input, "executive")
+    
+    def get_product_summary(self, repo_input: str) -> str:
+        """Get product-level summary for Prebid release."""
+        return self.respond(repo_input, "product")
+    
+    def get_developer_summary(self, repo_input: str) -> str:
+        """Get developer-level summary for Prebid release."""
+        return self.respond(repo_input, "developer")
+    
+    def get_all_summaries(self, repo_input: str) -> str:
+        """Get all summary levels for Prebid release."""
+        return self.respond(repo_input, "all")
     
     def _parse_prebid_input(self, message: str) -> tuple[str, str]:
         """Parse Prebid-specific input formats."""
@@ -83,7 +99,7 @@ class PrebidReleaseAgent(GitHubReleaseAgent):
         
         result += "\n**Usage Examples:**\n"
         result += "- `js` - Analyze latest Prebid.js release\n"
-        result += "- `server:v3.18.0` - Analyze specific prebid-server release\n"
+        result += "- `server-go:v3.18.0` - Analyze specific prebid-server release\n"
         result += "- `ios v2.1.0` - Analyze specific iOS release\n"
         
         return result

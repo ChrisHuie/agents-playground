@@ -22,7 +22,7 @@ uv run python examples/prebid_demo.py
 | Shortcut | Repository | Description |
 |----------|------------|-------------|
 | `js` | prebid/Prebid.js | JavaScript header bidding library |
-| `server` | prebid/prebid-server | Go-based Prebid Server |
+| `server-go` | prebid/prebid-server | Go-based Prebid Server |
 | `server-java` | prebid/prebid-server-java | Java-based Prebid Server |
 | `ios` | prebid/prebid-mobile-ios | iOS mobile SDK |
 | `android` | prebid/prebid-mobile-android | Android mobile SDK |
@@ -37,14 +37,14 @@ agent = PrebidReleaseAgent()
 
 # Get latest release automatically
 result = agent.respond("js")          # Latest Prebid.js
-result = agent.respond("server")      # Latest prebid-server  
+result = agent.respond("server-go")   # Latest prebid-server  
 result = agent.respond("ios")         # Latest iOS SDK
 ```
 
 ### Analyze Specific Releases
 ```python
 # Using colon format
-result = agent.respond("server:v3.18.0")
+result = agent.respond("server-go:v3.18.0")
 
 # Using space format  
 result = agent.respond("js 9.49.1")
@@ -83,40 +83,53 @@ print(agent.respond('js'))
 
 ### Basic Commands
 - `js` → Latest Prebid.js release
-- `server` → Latest prebid-server release
-- `server:v3.18.0` → Specific prebid-server version
+- `server-go` → Latest prebid-server release
+- `server-go:v3.18.0` → Specific prebid-server version
 - `ios v3.0.2` → Specific iOS SDK version
 
 ### Advanced Usage
 ```python
 # Compare releases
-agent.compare_releases("server", "v3.17.0", "v3.18.0")
+agent.compare_releases("server-go", "v3.17.0", "v3.18.0")
 
 # Analyze latest
 agent.analyze_latest("js")
 
 # List repos with latest versions
 agent.list_prebid_repos()
+
+# Multi-level summaries
+agent.get_executive_summary("server-go:v3.18.0")    # High-level overview
+agent.get_product_summary("server-go:v3.18.0")      # Business impact per PR
+agent.get_developer_summary("server-go:v3.18.0")    # Technical details per PR
+agent.get_all_summaries("server-go:v3.18.0")        # All 3 levels
 ```
 
-## 📊 Example Output
-```
-🚀 Release Analysis: prebid/prebid-server - v3.18.0
+## 📊 Multi-Level Summary Analysis
 
-📊 Quick Stats:
-- Total PRs: 18
-- Release Date: 2025-06-05 19:27:05
-- Categories: 4
+The agent provides 3 different analysis levels for different audiences:
 
-📋 PR Breakdown:
-**Features** (5 PRs):
-- #4320: MobileFuse: Add usersync info (@dtbarne)
-- #4201: New Adapter: Netaddiction - Admatic alias (@bakicam)
-...
+### 📋 Executive Summary
+- **Audience**: C-level, leadership, stakeholders
+- **Focus**: Strategic overview, business impact, key highlights
+- **Length**: Concise, 1-2 paragraphs
+- **Content**: Overall release theme, major changes, impact assessment
 
-🤖 AI-Generated Summary:
-This release focuses on expanding bidder coverage and improving 
-existing adapter functionality...
+### 🎯 Product Summary  
+- **Audience**: Product managers, business analysts
+- **Focus**: Individual PR business impact, feature analysis
+- **Length**: Detailed, covers each PR individually
+- **Content**: User impact, feature classification, roadmap implications
+
+### ⚙️ Developer Summary
+- **Audience**: Engineers, technical leads, architects
+- **Focus**: Technical implementation details, code changes
+- **Length**: Comprehensive technical analysis
+- **Content**: Architecture changes, breaking changes, performance impact
+
+### 📋 Demo Multi-Level Analysis
+```bash
+uv run python examples/multi_level_summary_demo.py
 ```
 
 ## 🐛 Troubleshooting
@@ -133,5 +146,5 @@ existing adapter functionality...
 
 3. **Common issues**:
    - Missing GitHub token → Add `GITHUB_TOKEN` to `.env`
-   - Invalid shortcut → Use: js, server, server-java, ios, android
+   - Invalid shortcut → Use: js, server-go, server-java, ios, android
    - Release not found → Check the tag exists on GitHub

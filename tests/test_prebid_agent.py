@@ -15,7 +15,7 @@ def test_prebid_agent_initialization():
     assert agent.config.name == "PrebidReleaseAnalyzer"
     assert len(agent.PREBID_REPOS) == 5
     assert "js" in agent.PREBID_REPOS
-    assert "server" in agent.PREBID_REPOS
+    assert "server-go" in agent.PREBID_REPOS
 
 
 def test_prebid_repo_shortcuts():
@@ -24,7 +24,7 @@ def test_prebid_repo_shortcuts():
     
     expected_repos = {
         "js": "prebid/Prebid.js",
-        "server": "prebid/prebid-server", 
+        "server-go": "prebid/prebid-server", 
         "server-java": "prebid/prebid-server-java",
         "ios": "prebid/prebid-mobile-ios",
         "android": "prebid/prebid-mobile-android"
@@ -47,7 +47,7 @@ def test_prebid_input_parsing():
         assert tag == "v8.0.0"
     
     # Test shortcut with colon format
-    repo, tag = agent._parse_prebid_input("server:v3.18.0")
+    repo, tag = agent._parse_prebid_input("server-go:v3.18.0")
     assert repo == "prebid/prebid-server"
     assert tag == "v3.18.0"
     
@@ -76,7 +76,7 @@ def test_list_prebid_repos():
         
         assert "Available Prebid Repository Shortcuts" in result
         assert "js" in result
-        assert "server" in result
+        assert "server-go" in result
         assert "Usage Examples" in result
 
 

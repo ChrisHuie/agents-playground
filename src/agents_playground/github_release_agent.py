@@ -39,7 +39,9 @@ class ReleaseAnalysis:
     release_date: Optional[datetime]
     total_prs: int
     prs: List[PRInfo]
-    summary: str
+    executive_summary: str
+    product_summary: str
+    developer_summary: str
     categories: Dict[str, List[PRInfo]]
 
 
@@ -62,15 +64,31 @@ class GitHubReleaseAgent(BaseAgent):
         # Initialize Gemini for summary generation
         self.gemini_agent = GeminiAgent(self.config)
     
-    def respond(self, message: str) -> str:
+    def respond(self, message: str, summary_level: str = "executive") -> str:
         """Main interface - accepts multiple input formats."""
         try:
             repo_name, release_tag = self._parse_input(message)
             analysis = self.analyze_release(repo_name, release_tag)
-            return self._format_analysis_response(analysis)
+            return self._format_analysis_response(analysis, summary_level)
             
         except Exception as e:
             return f"Error analyzing release: {str(e)}"
+    
+    def get_executive_summary(self, message: str) -> str:
+        """Get executive-level summary only."""
+        return self.respond(message, "executive")
+    
+    def get_product_summary(self, message: str) -> str:
+        """Get product-level summary only."""
+        return self.respond(message, "product")
+    
+    def get_developer_summary(self, message: str) -> str:
+        """Get developer-level summary only."""
+        return self.respond(message, "developer")
+    
+    def get_all_summaries(self, message: str) -> str:
+        """Get all summary levels."""
+        return self.respond(message, "all")
     
     def _parse_input(self, message: str) -> tuple[str, str]:
         """Parse different input formats to extract repo and tag."""
@@ -127,8 +145,10 @@ Please provide input in one of these formats:
             # Categorize PRs
             categories = self._categorize_prs(prs)
             
-            # Generate AI summary
-            summary = self._generate_summary(repo_name, release_tag, prs, categories)
+            # Generate AI summaries at different levels
+            executive_summary = self._generate_executive_summary(repo_name, release_tag, prs, categories)
+            product_summary = self._generate_product_summary(repo_name, release_tag, prs, categories)
+            developer_summary = self._generate_developer_summary(repo_name, release_tag, prs, categories)
             
             return ReleaseAnalysis(
                 repo_name=repo_name,
@@ -136,7 +156,9 @@ Please provide input in one of these formats:
                 release_date=release_date,
                 total_prs=len(prs),
                 prs=prs,
-                summary=summary,
+                executive_summary=executive_summary,
+                product_summary=product_summary,
+                developer_summary=developer_summary,
                 categories=categories
             )
             
@@ -306,8 +328,8 @@ Please provide input in one of these formats:
         # Remove empty categories
         return {k: v for k, v in categories.items() if v}
     
-    def _generate_summary(self, repo_name: str, release_tag: str, prs: List[PRInfo], categories: Dict[str, List[PRInfo]]) -> str:
-        """Generate an AI-powered summary of the release."""
+    def _generate_executive_summary(self, repo_name: str, release_tag: str, prs: List[PRInfo], categories: Dict[str, List[PRInfo]]) -> str:
+        """Generate an executive-level AI-powered summary of the release."""
         # Prepare context for Gemini
         context = f"""Analyze this GitHub release and create a comprehensive summary:
 
@@ -356,7 +378,113 @@ Make it professional but accessible, suitable for release notes."""
         except Exception as e:
             return f"Could not generate AI summary: {str(e)}\n\nBasic summary: This release includes {len(prs)} pull requests across {len(categories)} categories."
     
-    def _format_analysis_response(self, analysis: ReleaseAnalysis) -> str:
+    def _generate_product_summary(self, repo_name: str, release_tag: str, prs: List[PRInfo], categories: Dict[str, List[PRInfo]]) -> str:
+        """Generate a product-level summary with high-level analysis of each PR."""
+        context = f"""Analyze this GitHub release from a PRODUCT MANAGER perspective and provide a detailed analysis of each pull request:
+
+Repository: {repo_name}
+Release Tag: {release_tag}
+Total PRs: {len(prs)}
+
+For each PR below, provide:
+1. User/business impact
+2. Feature classification (New Feature/Enhancement/Bug Fix/etc.)
+3. Priority/importance level
+4. Dependencies or related changes
+
+PRs by Category:
+"""
+        
+        for category, category_prs in categories.items():
+            context += f"\n{category} ({len(category_prs)} PRs):\n"
+            for pr in category_prs:
+                context += f"\n#{pr.number}: {pr.title} by @{pr.author}\n"
+                if pr.body and len(pr.body) > 0:
+                    body_preview = pr.body[:300].replace('\n', ' ').strip()
+                    if len(pr.body) > 300:
+                        body_preview += "..."
+                    context += f"Description: {body_preview}\n"
+                context += f"Stats: +{pr.additions}/-{pr.deletions} lines, {pr.changed_files} files\n"
+                if pr.labels:
+                    context += f"Labels: {', '.join(pr.labels)}\n"
+
+        context += f"""
+Create a PRODUCT-FOCUSED summary that includes:
+1. Individual PR analysis with business impact
+2. User-facing changes and their significance
+3. Feature roadmap implications
+4. Risk assessment for each change
+5. Dependencies between changes
+
+Make it suitable for product managers and stakeholders who need to understand business impact."""
+
+        try:
+            summary = self.gemini_agent.respond(context)
+            return summary
+        except Exception as e:
+            return f"Could not generate product summary: {str(e)}"
+    
+    def _generate_developer_summary(self, repo_name: str, release_tag: str, prs: List[PRInfo], categories: Dict[str, List[PRInfo]]) -> str:
+        """Generate a developer-level summary with technical explanation of each PR."""
+        context = f"""Analyze this GitHub release from a DEVELOPER/TECHNICAL perspective and provide detailed technical analysis of each pull request:
+
+Repository: {repo_name}
+Release Tag: {release_tag}
+Total PRs: {len(prs)}
+
+For each PR below, provide:
+1. Technical implementation details
+2. Architecture/design changes
+3. Code complexity assessment
+4. Potential breaking changes
+5. Testing implications
+6. Performance impact
+
+PRs by Category:
+"""
+        
+        for category, category_prs in categories.items():
+            context += f"\n{category} ({len(category_prs)} PRs):\n"
+            for pr in category_prs:
+                context += f"\n#{pr.number}: {pr.title} by @{pr.author}\n"
+                if pr.body and len(pr.body) > 0:
+                    body_preview = pr.body[:500].replace('\n', ' ').strip()
+                    if len(pr.body) > 500:
+                        body_preview += "..."
+                    context += f"Description: {body_preview}\n"
+                context += f"Technical Stats: +{pr.additions}/-{pr.deletions} lines across {pr.changed_files} files\n"
+                context += f"Commits: {pr.commits_count}\n"
+                if pr.labels:
+                    context += f"Labels: {', '.join(pr.labels)}\n"
+
+        total_additions = sum(pr.additions for pr in prs)
+        total_deletions = sum(pr.deletions for pr in prs)
+        total_files = sum(pr.changed_files for pr in prs)
+        
+        context += f"""
+Overall Technical Stats:
+- Lines added: {total_additions:,}
+- Lines deleted: {total_deletions:,}
+- Files changed: {total_files:,}
+- Contributors: {len(set(pr.author for pr in prs))}
+
+Create a TECHNICAL summary that includes:
+1. Individual PR technical analysis
+2. Code architecture implications
+3. Breaking changes and migration requirements
+4. Performance and scalability impact
+5. Testing and quality considerations
+6. Integration complexity
+
+Make it suitable for developers and technical leads who need to understand implementation details."""
+
+        try:
+            summary = self.gemini_agent.respond(context)
+            return summary
+        except Exception as e:
+            return f"Could not generate developer summary: {str(e)}"
+    
+    def _format_analysis_response(self, analysis: ReleaseAnalysis, summary_level: str = "all") -> str:
         """Format the analysis results for display."""
         response = f"""
 🚀 **Release Analysis: {analysis.repo_name} - {analysis.release_tag}**
@@ -376,7 +504,17 @@ Make it professional but accessible, suitable for release notes."""
             if len(prs) > 5:
                 response += f"- ... and {len(prs) - 5} more\n"
         
-        response += f"\n🤖 **AI-Generated Summary:**\n{analysis.summary}"
+        # Add summaries based on requested level
+        if summary_level == "all":
+            response += f"\n📋 **Executive Summary:**\n{analysis.executive_summary}"
+            response += f"\n\n🎯 **Product Summary:**\n{analysis.product_summary}"
+            response += f"\n\n⚙️ **Developer Summary:**\n{analysis.developer_summary}"
+        elif summary_level == "executive":
+            response += f"\n📋 **Executive Summary:**\n{analysis.executive_summary}"
+        elif summary_level == "product":
+            response += f"\n🎯 **Product Summary:**\n{analysis.product_summary}"
+        elif summary_level == "developer":
+            response += f"\n⚙️ **Developer Summary:**\n{analysis.developer_summary}"
         
         return response
 
