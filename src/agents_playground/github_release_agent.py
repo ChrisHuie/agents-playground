@@ -345,8 +345,8 @@ Please create a well-structured release summary that includes:
 1. Overview of the release
 2. Key highlights and major changes
 3. Breakdown by category
-4. Notable contributors
-5. Impact assessment
+4. Impact assessment
+5. Notable contributors
 
 Make it professional but accessible, suitable for release notes."""
         
