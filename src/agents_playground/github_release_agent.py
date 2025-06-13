@@ -251,16 +251,28 @@ Please provide input in one of these formats:
     
     def _extract_pr_info(self, pr: PullRequest) -> PRInfo:
         """Extract detailed information from a PR."""
-        # Get file changes for better categorization
+        # Get file changes and their diffs for better categorization
         files = []
+        file_changes = {}  # Store file changes for content analysis
         try:
             pr_files = list(pr.get_files())
             files = [f.filename for f in pr_files]
+            
+            # Get file changes/diffs for content analysis
+            for f in pr_files:
+                file_changes[f.filename] = {
+                    'status': f.status,  # 'added', 'modified', 'removed'
+                    'additions': f.additions,
+                    'deletions': f.deletions,
+                    'patch': f.patch if hasattr(f, 'patch') else None
+                }
         except Exception as e:
             print(f"⚠️  Could not fetch files for PR #{pr.number}: {e}")
             files = []
+            file_changes = {}
         
-        return PRInfo(
+        # Store file changes in PRInfo for content analysis
+        pr_info = PRInfo(
             number=pr.number,
             title=pr.title,
             body=pr.body or "",
@@ -274,6 +286,11 @@ Please provide input in one of these formats:
             changed_files=pr.changed_files,
             files=files
         )
+        
+        # Add file changes as custom attribute
+        pr_info.file_changes = file_changes
+        
+        return pr_info
     
     def _categorize_prs(self, prs: List[PRInfo]) -> Dict[str, List[PRInfo]]:
         """Categorize PRs based on Prebid-specific patterns."""
@@ -432,8 +449,8 @@ Please provide input in one of these formats:
         return "maintenance"
     
     def _is_new_adapter_or_module(self, pr: PRInfo) -> bool:
-        """Check if PR introduces a new adapter or module based on file structure."""
-        if not pr.files:
+        """Check if PR introduces a new adapter or module based on file changes and content analysis."""
+        if not pr.files or not hasattr(pr, 'file_changes'):
             return False
         
         import re
@@ -446,182 +463,330 @@ Please provide input in one of these formats:
         is_java_repo = any('src/main/java/' in f and 'bidder/' in f for f in pr.files) or \
                        any('src/main/resources/bidder-config/' in f for f in pr.files)
         
-        new_modules = set()  # Use set to avoid duplicates
-        
+        # Analyze based on repository type and actual file changes
         if is_js_repo:
-            # JavaScript repository patterns (Prebid.js)
-            js_patterns = [
-                r'modules/[^/]+BidAdapter\.js$',
-                r'modules/[^/]+AnalyticsAdapter\.js$',
-                r'modules/[^/]+RtdProvider\.js$',
-                r'modules/[^/]+IdSystem\.js$',
-                r'modules/[^/]+\.js$'
-            ]
-            
-            for file_path in pr.files:
-                for pattern in js_patterns:
-                    if re.match(pattern, file_path):
-                        module_name = file_path.split('/')[-1].replace('.js', '')
-                        new_modules.add(module_name)
-        
+            return self._detect_new_js_adapter(pr)
         elif is_go_repo:
-            # Go repository patterns (prebid-server)
-            go_patterns = [
-                r'adapters/([^/]+)/\1\.go$',  # Main bidder adapter implementation
-                r'static/bidder-info/([^/]+)\.yaml$',  # Bidder adapter configuration
-                r'static/bidder-params/([^/]+)\.json$',  # Parameter schema
-                r'openrtb_ext/imp_([^/]+)\.go$',  # Extension types
-                r'analytics/([^/]+)/.*\.go$',  # Analytics adapter files
-                r'analytics/([^/]+)/README\.md$'  # Analytics adapter documentation
-            ]
-            
-            for file_path in pr.files:
-                for pattern in go_patterns:
-                    match = re.match(pattern, file_path)
-                    if match:
-                        adapter_name = match.group(1)
-                        new_modules.add(adapter_name)
-        
+            return self._detect_new_go_adapter(pr)
         elif is_java_repo:
-            # Java repository patterns (prebid-server-java)
-            java_patterns = [
-                r'src/main/java/org/prebid/server/bidder/([^/]+)/.*Bidder\.java$',  # Main adapter implementation
-                r'src/main/resources/bidder-config/([^/]+)\.yaml$',  # Adapter configuration
-                r'src/main/resources/static/bidder-params/([^/]+)\.json$',  # Parameter schema
-                r'src/main/java/org/prebid/server/proto/openrtb/ext/request/([^/]+)/.*\.java$',  # Extension types
-                r'src/main/java/org/prebid/server/spring/config/bidder/([^/]+)BidderConfiguration\.java$'  # Spring config
-            ]
-            
-            for file_path in pr.files:
-                for pattern in java_patterns:
-                    match = re.match(pattern, file_path)
-                    if match:
-                        adapter_name = match.group(1)
-                        new_modules.add(adapter_name)
+            return self._detect_new_java_adapter(pr)
         
-        else:
-            # Generic patterns for other repositories
-            generic_patterns = [
-                r'adapters/[^/]+\.go$',
-                r'modules/[^/]+\.js$',
-                r'src/adapters/[^/]+/',
-                r'bidders/[^/]+/'
-            ]
-            
-            for file_path in pr.files:
-                for pattern in generic_patterns:
+        return False
+    
+    def _detect_new_js_adapter(self, pr: PRInfo) -> bool:
+        """Detect new JavaScript adapters/modules based on file creation patterns."""
+        import re
+        
+        # JavaScript pattern: New files in modules/ with specific extensions are always new adapters/modules
+        js_adapter_patterns = [
+            r'modules/[^/]+BidAdapter\.js$',
+            r'modules/[^/]+AnalyticsAdapter\.js$', 
+            r'modules/[^/]+RtdProvider\.js$',
+            r'modules/[^/]+IdSystem\.js$'
+        ]
+        
+        new_adapter_files = []
+        
+        for file_path, changes in pr.file_changes.items():
+            # Check if this is a new file being added (not modified)
+            if changes['status'] == 'added':
+                for pattern in js_adapter_patterns:
                     if re.match(pattern, file_path):
-                        # Extract potential module name
-                        parts = file_path.split('/')
-                        if len(parts) >= 2:
-                            module_name = parts[-1].replace('.go', '').replace('.js', '')
-                            new_modules.add(module_name)
+                        new_adapter_files.append(file_path)
+                        break
         
-        new_modules = list(new_modules)  # Convert back to list
-        
-        if not new_modules:
-            return False
-        
-        # Additional validation: check if this looks like a new module introduction
-        # Look for patterns that indicate this is adding a NEW module, not modifying existing
-        for module_name in new_modules:
-            # Repository-specific validation
-            if is_js_repo:
-                # JavaScript repository validation
-                doc_files = [f for f in pr.files if f.endswith(f'{module_name}.md')]
-                test_files = [f for f in pr.files if module_name.lower() in f.lower() and '_spec.js' in f]
-                
-                # If we have the main module file and either docs or tests, likely a new module
-                if doc_files or test_files:
-                    return True
-            
-            elif is_go_repo:
-                # Go repository validation - look for supporting files
-                go_impl_files = [f for f in pr.files if f.startswith('adapters/') and module_name in f and f.endswith('.go')]
-                yaml_files = [f for f in pr.files if f.startswith('static/bidder-info/') and module_name in f]
-                param_files = [f for f in pr.files if f.startswith('static/bidder-params/') and module_name in f]
-                test_files = [f for f in pr.files if 'test' in f.lower() and module_name in f]
-                
-                # Analytics adapter validation
-                analytics_files = [f for f in pr.files if f.startswith('analytics/') and module_name in f]
-                analytics_go_files = [f for f in analytics_files if f.endswith('.go')]
-                analytics_docs = [f for f in analytics_files if f.endswith('README.md')]
-                
-                # Check for new bidder adapter
-                if go_impl_files and (yaml_files or param_files):
-                    return True
-                elif len([f for f in [yaml_files, param_files, test_files] if f]) >= 2:
-                    return True
-                
-                # Check for new analytics adapter
-                elif analytics_go_files and len(analytics_files) >= 2:
-                    return True
-                elif analytics_docs and analytics_go_files:
-                    return True
-            
-            elif is_java_repo:
-                # Java repository validation - look for supporting files
-                java_impl_files = [f for f in pr.files if 'bidder/' + module_name in f and 'Bidder.java' in f]
-                yaml_files = [f for f in pr.files if f.startswith('src/main/resources/bidder-config/') and module_name in f]
-                param_files = [f for f in pr.files if f.startswith('src/main/resources/static/bidder-params/') and module_name in f]
-                test_files = [f for f in pr.files if 'test' in f.lower() and module_name in f]
-                config_files = [f for f in pr.files if 'spring/config/bidder/' in f and module_name in f]
-                ext_files = [f for f in pr.files if 'proto/openrtb/ext/request/' + module_name in f]
-                
-                # Require Java implementation file OR multiple supporting files for new adapter
-                if java_impl_files and (yaml_files or param_files or config_files):
-                    return True
-                elif len([f for f in [yaml_files, param_files, test_files, config_files, ext_files] if f]) >= 2:
-                    return True
-            
-            # Title-based validation (works for both repo types)
-            title_lower = pr.title.lower()
-            if any(pattern in title_lower for pattern in [
-                "initial release", "new adapter", "new bidder", "new module",
-                "add adapter", "add bidder", "add module", "bidder adapter"
-            ]):
-                return True
-        
-        # Repository-specific validation for edge cases
-        if is_go_repo:
-            # For Go repos, be more lenient with additions threshold since 
-            # Go files tend to be more verbose
-            min_additions = 50
-        elif is_java_repo:
-            # For Java repos, use moderate threshold since Java is verbose
-            # but structured with separate files
-            min_additions = 75
-        else:
-            # For JS repos, keep higher threshold
-            min_additions = 100
-        
-        # For single module file changes, be more strict
-        if len(new_modules) == 1:
-            title_lower = pr.title.lower()
-            
-            # First check if title suggests it's NOT a new module
-            if any(pattern in title_lower for pattern in [
-                "fix", "bug", "update", "improve", "refactor", "patch",
-                "enhance", "optimize", "cleanup", "maintain", "adjust"
-            ]):
-                return False
-            
-            # Must have significant additions and minimal deletions for new modules
-            if pr.additions > min_additions and pr.deletions < 20:
-                # Check if title suggests it's new
-                if any(pattern in title_lower for pattern in [
-                    "initial release", "new adapter", "new bidder", "new module",
-                    "add adapter", "add bidder", "add module", ": initial", "bidder adapter"
-                ]):
-                    return True
-            
-            # If single module file but doesn't meet criteria, it's not new
-            return False
-        
-        # For multiple module files, likely a new module
-        elif len(new_modules) > 1 and pr.additions > pr.deletions * 2:
+        # If any new adapter files are being created, it's definitely a new adapter/module
+        if new_adapter_files:
+            print(f"🆕 New JS adapter found: {len(new_adapter_files)} files created")
             return True
         
+        return False
+    
+    def _detect_new_go_adapter(self, pr: PRInfo) -> bool:
+        """Detect new Go adapters based on aliasOf patterns and new file creation."""
+        import re
+        
+        # Pattern 1: Check for aliasOf being added to YAML files (indicates new adapter alias)
+        for file_path, changes in pr.file_changes.items():
+            if file_path.startswith('static/bidder-info/') and file_path.endswith('.yaml'):
+                patch = changes.get('patch', '')
+                if patch:
+                    # Look for various aliasOf patterns being added
+                    alias_patterns = [
+                        '+aliasOf:', '+ aliasOf:', '+  aliasOf:',  # Different indentation
+                        '+ aliasOf :', '+aliasOf :', '+  aliasOf :'  # With space before colon
+                    ]
+                    
+                    for pattern in alias_patterns:
+                        if pattern in patch:
+                            print(f"🏷️ New Go alias found: alias configuration in {file_path}")
+                            return True
+                    
+                    # Also check for the creation of new alias files
+                    if changes['status'] == 'added' and 'aliasOf' in patch:
+                        print(f"🏷️ New Go alias found: alias file created")
+                        return True
+        
+        # Pattern 2: New analytics adapter files being created
+        analytics_files = []
+        for file_path, changes in pr.file_changes.items():
+            if changes['status'] == 'added' and file_path.startswith('analytics/'):
+                analytics_files.append(file_path)
+        
+        # If multiple analytics files are being created, it's a new analytics adapter
+        if len(analytics_files) >= 2:
+            print(f"🆕 New Go analytics adapter found: {len(analytics_files)} files created")
+            return True
+        
+        # Pattern 3: New bidder adapter files being created (full implementation)
+        new_adapter_dirs = set()
+        for file_path, changes in pr.file_changes.items():
+            if changes['status'] == 'added':
+                # Check for new adapter implementation
+                match = re.match(r'adapters/([^/]+)/\1\.go$', file_path)
+                if match:
+                    adapter_name = match.group(1)
+                    new_adapter_dirs.add(adapter_name)
+                
+                # Check for new bidder config
+                match = re.match(r'static/bidder-info/([^/]+)\.yaml$', file_path)
+                if match:
+                    adapter_name = match.group(1)
+                    new_adapter_dirs.add(adapter_name)
+        
+        # If we have new adapter files being created, it's likely a new adapter
+        if new_adapter_dirs:
+            print(f"🆕 New Go adapter found: {len(new_adapter_dirs)} adapters created")
+            return True
+        
+        return False
+    
+    def _detect_new_java_adapter(self, pr: PRInfo) -> bool:
+        """Detect new Java adapters based on aliases being added and new file creation."""
+        import re
+        
+        # Pattern 1: Check for test-application.properties alias configurations (primary pattern)
+        for file_path, changes in pr.file_changes.items():
+            if 'test-application.properties' in file_path:
+                patch = changes.get('patch', '')
+                if patch:
+                    # Look for adapter.parent.aliases.alias_name patterns
+                    if self._detect_test_properties_alias(patch, file_path):
+                        return True
+        
+        # Pattern 2: Check for aliases being added to YAML bidder-config files
+        for file_path, changes in pr.file_changes.items():
+            if 'src/main/resources/bidder-config/' in file_path and file_path.endswith('.yaml'):
+                patch = changes.get('patch', '')
+                if patch and self._detect_yaml_alias_addition(patch, file_path):
+                    return True
+        
+        # Pattern 3: Check for new alias test files being created with content analysis
+        for file_path, changes in pr.file_changes.items():
+            if changes['status'] == 'added':
+                # Check for new test files that might indicate aliases
+                if file_path.endswith('Test.java') and ('src/test/java/' in file_path or 'src/test/' in file_path):
+                    # Check patch content for alias indicators (not title)
+                    patch = changes.get('patch', '')
+                    if patch:
+                        # Look for alias-specific patterns in test code
+                        if self._has_alias_test_patterns(patch, file_path):
+                            return True
+        
+        # Pattern 4: Check for specific file combination patterns that indicate alias
+        if self._detect_alias_file_patterns(pr):
+            return True
+        
+        # Pattern 5: New bidder implementation files being created (full adapters)
+        new_bidder_files = []
+        for file_path, changes in pr.file_changes.items():
+            if changes['status'] == 'added':
+                # Check for new Java bidder implementation
+                if 'src/main/java/org/prebid/server/bidder/' in file_path and 'Bidder.java' in file_path:
+                    new_bidder_files.append(file_path)
+                
+                # Check for new bidder configuration
+                elif 'src/main/resources/bidder-config/' in file_path and file_path.endswith('.yaml'):
+                    new_bidder_files.append(file_path)
+        
+        # If multiple new bidder files are being created, it's likely a new adapter (not alias)
+        if len(new_bidder_files) >= 2:
+            print(f"🆕 New Java adapter found: {len(new_bidder_files)} files created")
+            return True
+        
+        return False
+    
+    def _is_java_alias_by_title(self, title: str) -> bool:
+        """Check if PR title indicates this is a Java alias."""
+        import re
+        title_lower = title.lower()
+        
+        # Pattern 1: "New Adapter: [Name] - [Parent] alias"
+        if re.match(r'new adapter:\s+\w+\s+-\s+\w+\s+alias', title_lower):
+            return True
+        
+        # Pattern 2: Contains "alias" and parent adapter references
+        if 'alias' in title_lower:
+            # Common parent adapters in Java server
+            parent_adapters = [
+                'adkernel', 'admatic', 'limelight', 'limelightdigital', 
+                'appnexus', 'rubicon', 'pubmatic', 'openx', 'criteo',
+                'smartadserver', 'ix', 'sharethrough', 'sovrn'
+            ]
+            for parent in parent_adapters:
+                if parent in title_lower:
+                    return True
+        
+        # Pattern 3: "Mere alias" phrase
+        if 'mere alias' in title_lower:
+            return True
+        
+        # Pattern 4: Title format with alias description
+        if (' - ' in title and 'alias' in title_lower) or ('(' in title and 'alias' in title_lower and ')' in title):
+            return True
+        
+        return False
+    
+    def _detect_yaml_alias_addition(self, patch: str, file_path: str) -> bool:
+        """Detect alias additions in YAML bidder-config files."""
+        import re
+        
+        # Pattern 1: Look for aliases section being added
+        if re.search(r'^\+\s{4}aliases:\s*$', patch, re.MULTILINE):
+            print(f"🏷️ New Java alias found: aliases section added in {file_path}")
+            return True
+        
+        # Pattern 2: Look for new alias entries being added under existing aliases section
+        # Format: +      alias-name: (6 spaces indentation)
+        alias_name_pattern = re.search(r'^\+\s{6}[\w\-]+:\s*', patch, re.MULTILINE)
+        if alias_name_pattern:
+            print(f"🏷️ New Java alias found: alias entry added in {file_path}")
+            return True
+        
+        # Pattern 3: Look for alias configuration lines being added
+        # Format: +        enabled: false (8+ spaces indentation)
+        alias_config_patterns = [
+            r'^\+\s{8}enabled:\s*(true|false)\s*$',
+            r'^\+\s{8}endpoint:\s*.+$',
+            r'^\+\s{8}meta-info:\s*$',
+            r'^\+\s{10}maintainer-email:\s*.+$'
+        ]
+        
+        for pattern in alias_config_patterns:
+            if re.search(pattern, patch, re.MULTILINE):
+                # Additional check: make sure we're in aliases context
+                if 'aliases' in patch:
+                    print(f"🏷️ New Java alias found: alias configuration in {file_path}")
+                    return True
+        
+        # Pattern 4: Look for simple alias with null value
+        # Format: +      alias-name: ~
+        if re.search(r'^\+\s{6}[\w\-]+:\s*~\s*$', patch, re.MULTILINE):
+            print(f"🏷️ New Java alias found: simple alias entry in {file_path}")
+            return True
+        
+        return False
+    
+    def _detect_test_properties_alias(self, patch: str, file_path: str) -> bool:
+        """Detect alias configurations in test-application.properties files."""
+        import re
+        
+        # Look for adapter.parent.aliases.alias_name patterns
+        alias_config_patterns = [
+            r'\+adapters\.\w+\.aliases\.\w+\.enabled\s*=\s*true',
+            r'\+adapters\.\w+\.aliases\.\w+\.endpoint\s*=',
+            r'\+\s*adapters\.\w+\.aliases\.\w+\.enabled\s*=\s*true',
+            r'\+\s*adapters\.\w+\.aliases\.\w+\.endpoint\s*='
+        ]
+        
+        for pattern in alias_config_patterns:
+            matches = re.findall(pattern, patch, re.IGNORECASE)
+            if matches:
+                print(f"🏷️ New Java alias found: test configuration in {file_path}")
+                return True
+        
+        # Also check for simpler .aliases. pattern in additions
+        if '+' in patch and '.aliases.' in patch:
+            lines = patch.split('\n')
+            for line in lines:
+                if line.startswith('+') and '.aliases.' in line and ('enabled' in line or 'endpoint' in line):
+                    print(f"🏷️ New Java alias found: alias configuration in {file_path}")
+                    return True
+        
+        return False
+    
+    def _has_alias_test_patterns(self, patch: str, file_path: str) -> bool:
+        """Check if test file patch contains alias-specific patterns."""
+        import re
+        
+        # Look for alias indicators in test code
+        alias_indicators = [
+            'alias',
+            'Alias',
+            'ALIAS',
+            'aliasOf',
+            'parent.*bidder',
+            'bidder.*alias'
+        ]
+        
+        for indicator in alias_indicators:
+            if re.search(indicator, patch, re.IGNORECASE):
+                print(f"🏷️ New Java alias found: alias test pattern in {file_path}")
+                return True
+        
+        return False
+    
+    def _detect_alias_file_patterns(self, pr: PRInfo) -> bool:
+        """Check for specific file patterns that indicate alias creation."""
+        added_files = []
+        modified_files = []
+        
+        for file_path, changes in pr.file_changes.items():
+            if changes['status'] == 'added':
+                added_files.append(file_path)
+            elif changes['status'] == 'modified':
+                modified_files.append(file_path)
+        
+        # Pattern 1: Test file added + test-application.properties modified with alias config
+        has_test_file_added = any('Test.java' in f for f in added_files)
+        has_test_props_modified = any('test-application.properties' in f for f in modified_files)
+        
+        if has_test_file_added and has_test_props_modified:
+            # Verify the test-application.properties contains alias configuration
+            for file_path, changes in pr.file_changes.items():
+                if 'test-application.properties' in file_path:
+                    patch = changes.get('patch', '')
+                    if patch and '.aliases.' in patch:
+                        print(f"🏷️ New Java alias found: test file + alias configuration pattern")
+                        return True
+        
+        # Pattern 2: Configuration files modified with alias content (no new bidder files)
+        has_alias_config = False
+        has_new_bidder_impl = any('src/main/java/org/prebid/server/bidder/' in f and 'Bidder.java' in f for f in added_files)
+        
+        if not has_new_bidder_impl:  # No new bidder implementation = likely alias
+            for file_path, changes in pr.file_changes.items():
+                if file_path.endswith('.yaml') or 'test-application.properties' in file_path:
+                    patch = changes.get('patch', '')
+                    if patch and ('.aliases.' in patch or '+aliases:' in patch):
+                        has_alias_config = True
+                        break
+            
+            if has_alias_config:
+                print(f"🏷️ New Java alias found: configuration-only alias changes")
+                return True
+        
+        return False
+    
+    def _has_aliases_context(self, patch: str) -> bool:
+        """Check if patch has aliases context (helpful for detecting alias list additions)."""
+        lines = patch.split('\n')
+        for i, line in enumerate(lines):
+            if 'aliases:' in line:
+                # Check if there are subsequent lines with list items
+                for j in range(i+1, min(i+10, len(lines))):
+                    if '+ -' in lines[j] or '+  -' in lines[j]:
+                        return True
         return False
     
     def _is_adapter_or_module_change(self, pr: PRInfo) -> bool:
