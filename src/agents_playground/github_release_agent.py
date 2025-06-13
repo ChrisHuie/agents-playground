@@ -29,6 +29,7 @@ class PRInfo:
     additions: int
     deletions: int
     changed_files: int
+    files: List[str] = None  # List of changed file paths
 
 
 @dataclass
@@ -250,6 +251,15 @@ Please provide input in one of these formats:
     
     def _extract_pr_info(self, pr: PullRequest) -> PRInfo:
         """Extract detailed information from a PR."""
+        # Get file changes for better categorization
+        files = []
+        try:
+            pr_files = list(pr.get_files())
+            files = [f.filename for f in pr_files]
+        except Exception as e:
+            print(f"⚠️  Could not fetch files for PR #{pr.number}: {e}")
+            files = []
+        
         return PRInfo(
             number=pr.number,
             title=pr.title,
@@ -261,72 +271,300 @@ Please provide input in one of these formats:
             commits_count=pr.commits,
             additions=pr.additions,
             deletions=pr.deletions,
-            changed_files=pr.changed_files
+            changed_files=pr.changed_files,
+            files=files
         )
     
     def _categorize_prs(self, prs: List[PRInfo]) -> Dict[str, List[PRInfo]]:
-        """Categorize PRs based on labels and titles."""
+        """Categorize PRs based on Prebid-specific patterns."""
         categories = {
-            "Features": [],
-            "Bug Fixes": [],
-            "Documentation": [],
-            "Refactoring": [],
-            "Tests": [],
-            "Dependencies": [],
+            "New Adapters/Modules": [],
+            "Core Features": [],
+            "Core Updates": [],
+            "Adapter/Module Features": [],
+            "Adapter/Module Updates": [],
+            "Testing/Build Process Updates": [],
             "Other": []
         }
         
         for pr in prs:
             categorized = False
+            title_lower = pr.title.lower()
+            body_lower = (pr.body or "").lower()
             
-            # Check labels first
-            for label in pr.labels:
-                label_lower = label.lower()
-                if any(word in label_lower for word in ["feature", "enhancement", "feat"]):
-                    categories["Features"].append(pr)
-                    categorized = True
-                    break
-                elif any(word in label_lower for word in ["bug", "fix", "hotfix"]):
-                    categories["Bug Fixes"].append(pr)
-                    categorized = True
-                    break
-                elif any(word in label_lower for word in ["doc", "docs", "documentation"]):
-                    categories["Documentation"].append(pr)
-                    categorized = True
-                    break
-                elif any(word in label_lower for word in ["refactor", "cleanup", "style"]):
-                    categories["Refactoring"].append(pr)
-                    categorized = True
-                    break
-                elif any(word in label_lower for word in ["test", "testing"]):
-                    categories["Tests"].append(pr)
-                    categorized = True
-                    break
-                elif any(word in label_lower for word in ["dependency", "deps", "bump"]):
-                    categories["Dependencies"].append(pr)
-                    categorized = True
-                    break
+            # 1. New Adapters/Modules - Check for new adapter/module creation based on file structure
+            if self._is_new_adapter_or_module(pr):
+                categories["New Adapters/Modules"].append(pr)
+                categorized = True
             
-            # If not categorized by labels, check title
+            # 2. Testing/Build Process Updates - Check early for test/build patterns
+            elif any(pattern in title_lower for pattern in [
+                "test", "testing", "spec", "ci", "workflow", "build",
+                "github", "action", "pipeline", "lint", "format",
+                "coverage", "benchmark", "validation", "integration"
+            ]):
+                categories["Testing/Build Process Updates"].append(pr)
+                categorized = True
+            
+            # Check if it's an adapter/module change (contains adapter/bidder name patterns)
+            elif self._is_adapter_or_module_change(pr):
+                # 4. Adapter/Module Features
+                if any(pattern in title_lower for pattern in [
+                    "add", "implement", "support", "enable", "feat",
+                    "feature", "new", "introduce"
+                ]) and not any(pattern in title_lower for pattern in [
+                    "fix", "bug", "resolve", "patch", "update", "maintenance"
+                ]):
+                    categories["Adapter/Module Features"].append(pr)
+                    categorized = True
+                # 5. Adapter/Module Updates (maintenance, bug fixes, documentation)
+                else:
+                    update_type = self._get_update_type(pr)
+                    categories["Adapter/Module Updates"].append(pr)
+                    # Add update type as metadata for better reporting
+                    if not hasattr(pr, 'update_type'):
+                        pr.update_type = update_type
+                    categorized = True
+            
+            # Core changes (src/ and other critical files)
+            elif self._is_core_change(pr):
+                # 2. Core Features
+                if any(pattern in title_lower for pattern in [
+                    "add", "implement", "support", "enable", "feat",
+                    "feature", "new", "introduce"
+                ]) and not any(pattern in title_lower for pattern in [
+                    "fix", "bug", "resolve", "patch", "update", "maintenance"
+                ]):
+                    categories["Core Features"].append(pr)
+                    categorized = True
+                # 3. Core Updates (bug fixes, maintenance, documentation)
+                else:
+                    update_type = self._get_update_type(pr)
+                    categories["Core Updates"].append(pr)
+                    # Add update type as metadata for better reporting
+                    if not hasattr(pr, 'update_type'):
+                        pr.update_type = update_type
+                    categorized = True
+            
+            # Fallback categorization
             if not categorized:
-                title_lower = pr.title.lower()
-                if any(word in title_lower for word in ["feat", "feature", "add", "implement"]):
-                    categories["Features"].append(pr)
-                elif any(word in title_lower for word in ["fix", "bug", "resolve", "patch"]):
-                    categories["Bug Fixes"].append(pr)
-                elif any(word in title_lower for word in ["doc", "docs", "readme", "documentation"]):
-                    categories["Documentation"].append(pr)
-                elif any(word in title_lower for word in ["refactor", "cleanup", "style", "format"]):
-                    categories["Refactoring"].append(pr)
-                elif any(word in title_lower for word in ["test", "testing", "spec"]):
-                    categories["Tests"].append(pr)
-                elif any(word in title_lower for word in ["bump", "update", "upgrade", "dependency"]):
-                    categories["Dependencies"].append(pr)
+                if any(pattern in title_lower for pattern in [
+                    "add", "implement", "support", "enable", "feat", "feature"
+                ]) and not any(pattern in title_lower for pattern in [
+                    "fix", "bug", "resolve", "patch", "update", "maintenance"
+                ]):
+                    categories["Core Features"].append(pr)
+                elif any(pattern in title_lower for pattern in [
+                    "fix", "bug", "resolve", "patch", "update", "upgrade",
+                    "refactor", "cleanup", "maintenance", "doc", "docs"
+                ]):
+                    update_type = self._get_update_type(pr)
+                    categories["Core Updates"].append(pr)
+                    if not hasattr(pr, 'update_type'):
+                        pr.update_type = update_type
                 else:
                     categories["Other"].append(pr)
         
         # Remove empty categories
         return {k: v for k, v in categories.items() if v}
+    
+    def _get_update_type(self, pr: PRInfo) -> str:
+        """Determine the specific type of update (bugfix, maintenance, documentation, etc.)."""
+        title_lower = pr.title.lower()
+        body_lower = (pr.body or "").lower()
+        
+        # Check for security updates first (highest priority)
+        if any(pattern in title_lower for pattern in [
+            "security", "vulnerability", "cve", "secure"
+        ]):
+            return "security"
+        
+        # Check for performance improvements (before refactoring check)
+        if any(pattern in title_lower for pattern in [
+            "performance", "optimize", "speed", "faster", "efficiency",
+            "perf", "latency", "throughput"
+        ]) and not any(pattern in title_lower for pattern in [
+            "refactor", "cleanup", "clean up", "reorganize", "restructure"
+        ]):
+            return "performance"
+        
+        # Check for bug fixes
+        if any(pattern in title_lower for pattern in [
+            "fix", "bug", "resolve", "patch", "hotfix", "issue"
+        ]):
+            return "bugfix"
+        
+        # Check for documentation
+        if any(pattern in title_lower for pattern in [
+            "doc", "docs", "documentation", "readme", "comment", "javadoc"
+        ]):
+            return "documentation"
+        
+        # Check for dependency updates
+        if any(pattern in title_lower for pattern in [
+            "bump", "upgrade", "dependency", "deps", "version", "update"
+        ]) and any(pattern in title_lower for pattern in [
+            "to", "from", "v", "version", "bump"
+        ]):
+            return "dependency update"
+        
+        # Check for configuration changes
+        if any(pattern in title_lower for pattern in [
+            "config", "configuration", "setting", "parameter", "option"
+        ]):
+            return "configuration"
+        
+        # Check for refactoring/cleanup
+        if any(pattern in title_lower for pattern in [
+            "refactor", "cleanup", "clean up", "reorganize", "restructure",
+            "improve", "simplify"
+        ]):
+            return "refactoring"
+        
+        # Check for maintenance tasks
+        if any(pattern in title_lower for pattern in [
+            "maintenance", "chore", "misc", "general", "housekeeping",
+            "routine", "update", "upgrade"
+        ]):
+            return "maintenance"
+        
+        # Default to maintenance
+        return "maintenance"
+    
+    def _is_new_adapter_or_module(self, pr: PRInfo) -> bool:
+        """Check if PR introduces a new adapter or module based on file structure."""
+        if not pr.files:
+            return False
+        
+        new_module_patterns = [
+            # New bid adapters
+            r'modules/[^/]+BidAdapter\.js$',
+            # New analytics adapters  
+            r'modules/[^/]+AnalyticsAdapter\.js$',
+            # New RTD providers
+            r'modules/[^/]+RtdProvider\.js$',
+            # New user ID systems
+            r'modules/[^/]+IdSystem\.js$',
+            # New general modules (but exclude existing known modules)
+            r'modules/[^/]+\.js$'
+        ]
+        
+        import re
+        
+        # Check for new module files being added
+        new_modules = set()  # Use set to avoid duplicates
+        for file_path in pr.files:
+            for pattern in new_module_patterns:
+                if re.match(pattern, file_path):
+                    # Extract module name from path
+                    module_name = file_path.split('/')[-1].replace('.js', '')
+                    new_modules.add(module_name)
+        
+        new_modules = list(new_modules)  # Convert back to list
+        
+        if not new_modules:
+            return False
+        
+        # Additional validation: check if this looks like a new module introduction
+        # Look for patterns that indicate this is adding a NEW module, not modifying existing
+        for module_name in new_modules:
+            # Check for corresponding documentation file
+            doc_files = [f for f in pr.files if f.endswith(f'{module_name}.md')]
+            # Check for corresponding test file
+            test_files = [f for f in pr.files if module_name.lower() in f.lower() and '_spec.js' in f]
+            
+            # If we have the main module file and either docs or tests, likely a new module
+            if doc_files or test_files:
+                return True
+            
+            # Also check for title patterns that suggest new modules
+            title_lower = pr.title.lower()
+            if any(pattern in title_lower for pattern in [
+                "initial release", "new adapter", "new bidder", "new module",
+                "add adapter", "add bidder", "add module"
+            ]):
+                return True
+        
+        # For single module file changes, be more strict
+        if len(new_modules) == 1:
+            title_lower = pr.title.lower()
+            
+            # First check if title suggests it's NOT a new module
+            if any(pattern in title_lower for pattern in [
+                "fix", "bug", "update", "improve", "refactor", "patch",
+                "enhance", "optimize", "cleanup", "maintain", "adjust"
+            ]):
+                return False
+            
+            # Must have significant additions and minimal deletions for new modules
+            if pr.additions > 100 and pr.deletions < 20:
+                # Check if title suggests it's new
+                if any(pattern in title_lower for pattern in [
+                    "initial release", "new adapter", "new bidder", "new module",
+                    "add adapter", "add bidder", "add module", ": initial"
+                ]):
+                    return True
+            
+            # If single module file but doesn't meet criteria, it's not new
+            return False
+        
+        # For multiple module files, likely a new module
+        elif len(new_modules) > 1 and pr.additions > pr.deletions * 2:
+            return True
+        
+        return False
+    
+    def _is_adapter_or_module_change(self, pr: PRInfo) -> bool:
+        """Check if PR is related to adapter or module changes."""
+        title_lower = pr.title.lower()
+        
+        # Common adapter/bidder patterns
+        adapter_patterns = [
+            # Direct adapter mentions
+            "adapter", "bidder", "module",
+            # Common adapter names (partial list - can be expanded)
+            "appnexus", "rubicon", "pubmatic", "openx", "sovrn",
+            "sharethrough", "criteo", "amazon", "facebook", "google",
+            "smaato", "mobilefuse", "conversant", "ix", "yieldmo",
+            "adform", "mejla", "smartadserver", "telaria", "unruly",
+            "outbrain", "taboola", "brightcom", "consumable", "emxdigital",
+            "gamoshi", "gumgum", "kargo", "lifestreet", "lockerdome",
+            "marsmedia", "mgid", "nanointeractive", "oftmedia", "pulsepoint",
+            "rhythmone", "sekindo", "vertamedia", "videobyte", "viewdeos",
+            "adsystem", "adyoulike", "beintoo", "brightroll", "colossus",
+            "concert", "copper6", "cpmstar", "deepintent", "dmx",
+            "eplanning", "freewheel", "geniee", "gothamads", "grid",
+            "huaweiads", "improvedigital", "inmobi", "justpremium", "kidoz",
+            "kubient", "lkqd", "lunamedia", "madvertise", "mediafuse",
+            "medianet", "mobfox", "nativeads", "nextmillennium", "nobid",
+            "onetag", "openrtb", "orbidder", "phunware", "placementio",
+            "pollux", "prebidorg", "projectagora", "pubwise", "quantumdx",
+            "quicksand", "realtime", "resetdigital", "rich", "rtbhouse",
+            "s2s", "silvermob", "sirdatartd", "smartrtb", "sonobi",
+            "spotx", "stroeercore", "synacormedia", "tappx", "telaria",
+            "triplelift", "trustedstack", "ucfunnel", "undertone", "valueimpression",
+            "vdopia", "visx", "vox", "xandr", "yahoo", "yieldlab", "zeroclickfraud"
+        ]
+        
+        return any(pattern in title_lower for pattern in adapter_patterns)
+    
+    def _is_core_change(self, pr: PRInfo) -> bool:
+        """Check if PR affects core/critical files."""
+        title_lower = pr.title.lower()
+        body_lower = (pr.body or "").lower()
+        
+        # Core patterns that indicate changes to critical files
+        core_patterns = [
+            "src/", "core", "config", "server", "auction", "exchange",
+            "cache", "currency", "gdpr", "ccpa", "privacy", "stored",
+            "video", "native", "banner", "analytics", "metrics",
+            "targeting", "floors", "deals", "pbs", "ortb", "openrtb",
+            "host", "account", "endpoint", "handler", "processor",
+            "validation", "timeout", "debug", "logging", "startup"
+        ]
+        
+        # Check if it mentions core functionality
+        return any(pattern in title_lower or pattern in body_lower for pattern in core_patterns)
     
     def _generate_executive_summary(self, repo_name: str, release_tag: str, prs: List[PRInfo], categories: Dict[str, List[PRInfo]]) -> str:
         """Generate an executive-level AI-powered summary of the release."""
@@ -499,10 +737,28 @@ Make it suitable for developers and technical leads who need to understand imple
         
         for category, prs in analysis.categories.items():
             response += f"\n**{category}** ({len(prs)} PRs):\n"
-            for pr in prs[:5]:  # Show first 5 PRs per category
-                response += f"- #{pr.number}: {pr.title} (@{pr.author})\n"
-            if len(prs) > 5:
-                response += f"- ... and {len(prs) - 5} more\n"
+            
+            # Group updates by type for better clarity
+            if "Updates" in category:
+                update_types = {}
+                for pr in prs:
+                    update_type = getattr(pr, 'update_type', 'maintenance')
+                    if update_type not in update_types:
+                        update_types[update_type] = []
+                    update_types[update_type].append(pr)
+                
+                for update_type, type_prs in update_types.items():
+                    response += f"  *{update_type.title()}* ({len(type_prs)}):\n"
+                    for pr in type_prs[:3]:  # Show first 3 PRs per update type
+                        response += f"  - #{pr.number}: {pr.title} (@{pr.author})\n"
+                    if len(type_prs) > 3:
+                        response += f"  - ... and {len(type_prs) - 3} more\n"
+            else:
+                # Regular display for non-update categories
+                for pr in prs[:5]:  # Show first 5 PRs per category
+                    response += f"- #{pr.number}: {pr.title} (@{pr.author})\n"
+                if len(prs) > 5:
+                    response += f"- ... and {len(prs) - 5} more\n"
         
         # Add summaries based on requested level
         if summary_level == "all":
