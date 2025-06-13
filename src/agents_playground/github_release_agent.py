@@ -436,29 +436,86 @@ Please provide input in one of these formats:
         if not pr.files:
             return False
         
-        new_module_patterns = [
-            # New bid adapters
-            r'modules/[^/]+BidAdapter\.js$',
-            # New analytics adapters  
-            r'modules/[^/]+AnalyticsAdapter\.js$',
-            # New RTD providers
-            r'modules/[^/]+RtdProvider\.js$',
-            # New user ID systems
-            r'modules/[^/]+IdSystem\.js$',
-            # New general modules (but exclude existing known modules)
-            r'modules/[^/]+\.js$'
-        ]
-        
         import re
         
-        # Check for new module files being added
+        # Detect repository type based on file patterns
+        is_js_repo = any('modules/' in f and f.endswith('.js') for f in pr.files)
+        is_go_repo = any('adapters/' in f and f.endswith('.go') for f in pr.files) or \
+                     any('static/bidder-info/' in f for f in pr.files) or \
+                     any('analytics/' in f for f in pr.files)
+        is_java_repo = any('src/main/java/' in f and 'bidder/' in f for f in pr.files) or \
+                       any('src/main/resources/bidder-config/' in f for f in pr.files)
+        
         new_modules = set()  # Use set to avoid duplicates
-        for file_path in pr.files:
-            for pattern in new_module_patterns:
-                if re.match(pattern, file_path):
-                    # Extract module name from path
-                    module_name = file_path.split('/')[-1].replace('.js', '')
-                    new_modules.add(module_name)
+        
+        if is_js_repo:
+            # JavaScript repository patterns (Prebid.js)
+            js_patterns = [
+                r'modules/[^/]+BidAdapter\.js$',
+                r'modules/[^/]+AnalyticsAdapter\.js$',
+                r'modules/[^/]+RtdProvider\.js$',
+                r'modules/[^/]+IdSystem\.js$',
+                r'modules/[^/]+\.js$'
+            ]
+            
+            for file_path in pr.files:
+                for pattern in js_patterns:
+                    if re.match(pattern, file_path):
+                        module_name = file_path.split('/')[-1].replace('.js', '')
+                        new_modules.add(module_name)
+        
+        elif is_go_repo:
+            # Go repository patterns (prebid-server)
+            go_patterns = [
+                r'adapters/([^/]+)/\1\.go$',  # Main bidder adapter implementation
+                r'static/bidder-info/([^/]+)\.yaml$',  # Bidder adapter configuration
+                r'static/bidder-params/([^/]+)\.json$',  # Parameter schema
+                r'openrtb_ext/imp_([^/]+)\.go$',  # Extension types
+                r'analytics/([^/]+)/.*\.go$',  # Analytics adapter files
+                r'analytics/([^/]+)/README\.md$'  # Analytics adapter documentation
+            ]
+            
+            for file_path in pr.files:
+                for pattern in go_patterns:
+                    match = re.match(pattern, file_path)
+                    if match:
+                        adapter_name = match.group(1)
+                        new_modules.add(adapter_name)
+        
+        elif is_java_repo:
+            # Java repository patterns (prebid-server-java)
+            java_patterns = [
+                r'src/main/java/org/prebid/server/bidder/([^/]+)/.*Bidder\.java$',  # Main adapter implementation
+                r'src/main/resources/bidder-config/([^/]+)\.yaml$',  # Adapter configuration
+                r'src/main/resources/static/bidder-params/([^/]+)\.json$',  # Parameter schema
+                r'src/main/java/org/prebid/server/proto/openrtb/ext/request/([^/]+)/.*\.java$',  # Extension types
+                r'src/main/java/org/prebid/server/spring/config/bidder/([^/]+)BidderConfiguration\.java$'  # Spring config
+            ]
+            
+            for file_path in pr.files:
+                for pattern in java_patterns:
+                    match = re.match(pattern, file_path)
+                    if match:
+                        adapter_name = match.group(1)
+                        new_modules.add(adapter_name)
+        
+        else:
+            # Generic patterns for other repositories
+            generic_patterns = [
+                r'adapters/[^/]+\.go$',
+                r'modules/[^/]+\.js$',
+                r'src/adapters/[^/]+/',
+                r'bidders/[^/]+/'
+            ]
+            
+            for file_path in pr.files:
+                for pattern in generic_patterns:
+                    if re.match(pattern, file_path):
+                        # Extract potential module name
+                        parts = file_path.split('/')
+                        if len(parts) >= 2:
+                            module_name = parts[-1].replace('.go', '').replace('.js', '')
+                            new_modules.add(module_name)
         
         new_modules = list(new_modules)  # Convert back to list
         
@@ -468,22 +525,75 @@ Please provide input in one of these formats:
         # Additional validation: check if this looks like a new module introduction
         # Look for patterns that indicate this is adding a NEW module, not modifying existing
         for module_name in new_modules:
-            # Check for corresponding documentation file
-            doc_files = [f for f in pr.files if f.endswith(f'{module_name}.md')]
-            # Check for corresponding test file
-            test_files = [f for f in pr.files if module_name.lower() in f.lower() and '_spec.js' in f]
+            # Repository-specific validation
+            if is_js_repo:
+                # JavaScript repository validation
+                doc_files = [f for f in pr.files if f.endswith(f'{module_name}.md')]
+                test_files = [f for f in pr.files if module_name.lower() in f.lower() and '_spec.js' in f]
+                
+                # If we have the main module file and either docs or tests, likely a new module
+                if doc_files or test_files:
+                    return True
             
-            # If we have the main module file and either docs or tests, likely a new module
-            if doc_files or test_files:
-                return True
+            elif is_go_repo:
+                # Go repository validation - look for supporting files
+                go_impl_files = [f for f in pr.files if f.startswith('adapters/') and module_name in f and f.endswith('.go')]
+                yaml_files = [f for f in pr.files if f.startswith('static/bidder-info/') and module_name in f]
+                param_files = [f for f in pr.files if f.startswith('static/bidder-params/') and module_name in f]
+                test_files = [f for f in pr.files if 'test' in f.lower() and module_name in f]
+                
+                # Analytics adapter validation
+                analytics_files = [f for f in pr.files if f.startswith('analytics/') and module_name in f]
+                analytics_go_files = [f for f in analytics_files if f.endswith('.go')]
+                analytics_docs = [f for f in analytics_files if f.endswith('README.md')]
+                
+                # Check for new bidder adapter
+                if go_impl_files and (yaml_files or param_files):
+                    return True
+                elif len([f for f in [yaml_files, param_files, test_files] if f]) >= 2:
+                    return True
+                
+                # Check for new analytics adapter
+                elif analytics_go_files and len(analytics_files) >= 2:
+                    return True
+                elif analytics_docs and analytics_go_files:
+                    return True
             
-            # Also check for title patterns that suggest new modules
+            elif is_java_repo:
+                # Java repository validation - look for supporting files
+                java_impl_files = [f for f in pr.files if 'bidder/' + module_name in f and 'Bidder.java' in f]
+                yaml_files = [f for f in pr.files if f.startswith('src/main/resources/bidder-config/') and module_name in f]
+                param_files = [f for f in pr.files if f.startswith('src/main/resources/static/bidder-params/') and module_name in f]
+                test_files = [f for f in pr.files if 'test' in f.lower() and module_name in f]
+                config_files = [f for f in pr.files if 'spring/config/bidder/' in f and module_name in f]
+                ext_files = [f for f in pr.files if 'proto/openrtb/ext/request/' + module_name in f]
+                
+                # Require Java implementation file OR multiple supporting files for new adapter
+                if java_impl_files and (yaml_files or param_files or config_files):
+                    return True
+                elif len([f for f in [yaml_files, param_files, test_files, config_files, ext_files] if f]) >= 2:
+                    return True
+            
+            # Title-based validation (works for both repo types)
             title_lower = pr.title.lower()
             if any(pattern in title_lower for pattern in [
                 "initial release", "new adapter", "new bidder", "new module",
-                "add adapter", "add bidder", "add module"
+                "add adapter", "add bidder", "add module", "bidder adapter"
             ]):
                 return True
+        
+        # Repository-specific validation for edge cases
+        if is_go_repo:
+            # For Go repos, be more lenient with additions threshold since 
+            # Go files tend to be more verbose
+            min_additions = 50
+        elif is_java_repo:
+            # For Java repos, use moderate threshold since Java is verbose
+            # but structured with separate files
+            min_additions = 75
+        else:
+            # For JS repos, keep higher threshold
+            min_additions = 100
         
         # For single module file changes, be more strict
         if len(new_modules) == 1:
@@ -497,11 +607,11 @@ Please provide input in one of these formats:
                 return False
             
             # Must have significant additions and minimal deletions for new modules
-            if pr.additions > 100 and pr.deletions < 20:
+            if pr.additions > min_additions and pr.deletions < 20:
                 # Check if title suggests it's new
                 if any(pattern in title_lower for pattern in [
                     "initial release", "new adapter", "new bidder", "new module",
-                    "add adapter", "add bidder", "add module", ": initial"
+                    "add adapter", "add bidder", "add module", ": initial", "bidder adapter"
                 ]):
                     return True
             
