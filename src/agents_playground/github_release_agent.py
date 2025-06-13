@@ -63,17 +63,51 @@ class GitHubReleaseAgent(BaseAgent):
         self.gemini_agent = GeminiAgent(self.config)
     
     def respond(self, message: str) -> str:
-        """Main interface - expects 'repo_name:release_tag' format."""
+        """Main interface - accepts multiple input formats."""
         try:
-            if ":" not in message:
-                return "Please provide input in format: 'owner/repo:release_tag'"
-            
-            repo_name, release_tag = message.split(":", 1)
-            analysis = self.analyze_release(repo_name.strip(), release_tag.strip())
+            repo_name, release_tag = self._parse_input(message)
+            analysis = self.analyze_release(repo_name, release_tag)
             return self._format_analysis_response(analysis)
             
         except Exception as e:
             return f"Error analyzing release: {str(e)}"
+    
+    def _parse_input(self, message: str) -> tuple[str, str]:
+        """Parse different input formats to extract repo and tag."""
+        message = message.strip()
+        
+        # Handle GitHub release URL format
+        if "github.com" in message and "/releases/tag/" in message:
+            # Extract from URL like: https://github.com/prebid/prebid-server/releases/tag/v3.18.0
+            import re
+            match = re.search(r'github\.com/([^/]+/[^/]+)/releases/tag/([^/?#]+)', message)
+            if match:
+                repo_name = match.group(1)
+                release_tag = match.group(2)
+                return repo_name, release_tag
+            else:
+                raise ValueError("Could not parse GitHub release URL")
+        
+        # Handle repo:tag format
+        elif ":" in message:
+            repo_name, release_tag = message.split(":", 1)
+            return repo_name.strip(), release_tag.strip()
+        
+        # Handle space-separated format
+        elif " " in message:
+            parts = message.split()
+            if len(parts) == 2:
+                return parts[0].strip(), parts[1].strip()
+            else:
+                raise ValueError("Please provide repo and tag separated by space")
+        
+        else:
+            raise ValueError("""
+Please provide input in one of these formats:
+- owner/repo:tag (e.g., 'prebid/prebid-server:v3.18.0')
+- owner/repo tag (e.g., 'prebid/prebid-server v3.18.0') 
+- GitHub URL (e.g., 'https://github.com/prebid/prebid-server/releases/tag/v3.18.0')
+""")
     
     def analyze_release(self, repo_name: str, release_tag: str) -> ReleaseAnalysis:
         """Analyze a specific release and return comprehensive analysis."""
@@ -139,7 +173,7 @@ class GitHubReleaseAgent(BaseAgent):
             if previous_release:
                 # Compare between previous release and current release
                 comparison = repo.compare(previous_release.tag_name, release.tag_name)
-                commits = comparison.commits
+                commits = list(comparison.commits)
             else:
                 # If no previous release, get all commits up to this release
                 commits = list(repo.get_commits(sha=target_commitish))[:50]  # Limit to recent commits
