@@ -72,6 +72,8 @@ class JavaScriptFileClassifier(FileClassifier):
             'bidadapter.js', 'analyticsadapter.js', 'rtdprovider.js', 'idsystem.js'
         ]):
             return 'adapter'
+        elif 'test/spec/modules/' in path:
+            return 'adapter'  # Module/adapter-specific tests
         elif 'test/' in path or path.endswith('.spec.js'):
             return 'test'
         elif path.startswith('.') or any(name in path for name in [
@@ -113,18 +115,22 @@ class GoFileClassifier(FileClassifier):
         
         if 'adapters/' in path or 'static/bidder-info/' in path or 'analytics/' in path:
             return 'adapter'
+        elif 'modules/' in path:
+            # Extract what comes after modules/
+            module_path = path.split('modules/', 1)[1]
+            # If it has a subdirectory (contains /) and doesn't start with 'prebid', it's a module
+            if '/' in module_path and not module_path.startswith('prebid/'):
+                return 'adapter'  # Third-party modules with subdirectories
+            else:
+                return 'core'  # Core module infrastructure or prebid modules
         elif 'test/' in path or path.endswith('_test.go'):
             return 'test'
         elif path.startswith('.') or any(name in path for name in ['makefile', 'dockerfile', 'go.mod']):
             return 'build'
         elif path.endswith('.md') or 'docs/' in path:
             return 'doc'
-        elif any(core_path in path for core_path in [
-            'endpoints/', 'exchange/', 'stored_requests/', 'privacy/', 'currency/', 'config/'
-        ]):
-            return 'core'
         else:
-            return 'other'
+            return 'core'  # Everything else not in adapters/analytics/modules is core
 
 
 class JavaFileClassifier(FileClassifier):
@@ -138,10 +144,12 @@ class JavaFileClassifier(FileClassifier):
         path = file_change.path.lower()
         
         if ('src/main/java/org/prebid/server/bidder/' in path or
-            'src/main/resources/bidder-config/' in path):
-            return 'adapter'
+            'src/main/resources/bidder-config/' in path or
+            'src/test/java/org/prebid/server/bidder/' in path or
+            'src/test/java/org/prebid/server/it/' in path):
+            return 'adapter'  # Bidder implementations, configs, and adapter-specific tests
         elif 'src/test/' in path or 'test-application.properties' in path:
-            return 'test'
+            return 'test'  # General tests
         elif path.startswith('.') or any(name in path for name in ['pom.xml', 'dockerfile']):
             return 'build'
         elif path.endswith('.md') or 'docs/' in path:
