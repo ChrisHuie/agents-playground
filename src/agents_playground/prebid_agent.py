@@ -27,31 +27,15 @@ class PrebidReleaseAgent(GitHubReleaseAgent):
             temperature=0.3
         ))
     
-    def respond(self, message: str, summary_level: str = "executive") -> str:
+    def respond(self, message: str) -> str:
         """Enhanced interface for Prebid repositories with shortcuts and latest tag support."""
         try:
             repo_name, release_tag = self._parse_prebid_input(message)
             analysis = self.analyze_release(repo_name, release_tag)
-            return self._format_analysis_response(analysis, summary_level)
+            return self._format_analysis_response(analysis)
             
         except Exception as e:
             return f"Error analyzing Prebid release: {str(e)}"
-    
-    def get_executive_summary(self, repo_input: str) -> str:
-        """Get executive-level summary for Prebid release."""
-        return self.respond(repo_input, "executive")
-    
-    def get_product_summary(self, repo_input: str) -> str:
-        """Get product-level summary for Prebid release."""
-        return self.respond(repo_input, "product")
-    
-    def get_developer_summary(self, repo_input: str) -> str:
-        """Get developer-level summary for Prebid release."""
-        return self.respond(repo_input, "developer")
-    
-    def get_all_summaries(self, repo_input: str) -> str:
-        """Get all summary levels for Prebid release."""
-        return self.respond(repo_input, "all")
     
     def _parse_prebid_input(self, message: str) -> tuple[str, str]:
         """Parse Prebid-specific input formats."""
