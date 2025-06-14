@@ -275,11 +275,11 @@ Please provide input in one of these formats:
         # Initialize detectors in priority order
         detectors = [
             NewAdaptersModulesDetector(),
-            TestingBuildDocsDetector(),
-            AdapterModuleChangesDetector(is_feature=True),   # Adapter & Module Features
-            AdapterModuleChangesDetector(is_feature=False),  # Adapter & Module Updates
             CoreChangesDetector(is_feature=True),            # Core Features
             CoreChangesDetector(is_feature=False),           # Core Updates
+            AdapterModuleChangesDetector(is_feature=True),   # Adapter & Module Features
+            AdapterModuleChangesDetector(is_feature=False),  # Adapter & Module Updates
+            TestingBuildDocsDetector(),
             OtherDetector()  # Fallback
         ]
         
@@ -311,23 +311,29 @@ Please provide input in one of these formats:
                     categories["Other"] = []
                 categories["Other"].append(pr)
         
-        # Remove empty categories and return
-        return {k: v for k, v in categories.items() if v}
+        # Return categories in the specified order with emojis
+        return self._order_categories_with_emojis(categories)
     
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
+    def _order_categories_with_emojis(self, categories: Dict[str, List]) -> Dict[str, List]:
+        """Order categories in specified order and add emojis."""
+        # Category mapping with emojis in desired order
+        category_order = [
+            ("🔮 New Adapters & Modules", "New Adapters & Modules"),
+            ("🦠 Core Features", "Core Features"),
+            ("💻 Core Updates", "Core Updates"),
+            ("⚡ Adapter & Module Features", "Adapter & Module Features"),
+            ("🔨 Adapter & Module Updates", "Adapter & Module Updates"),
+            ("🧪 Testing / Build Process / Docs Updates", "Testing / Build Process / Docs Updates"),
+            ("🛸 Other", "Other")
+        ]
+        
+        ordered_categories = {}
+        
+        for emoji_category, original_category in category_order:
+            if original_category in categories and categories[original_category]:
+                ordered_categories[emoji_category] = categories[original_category]
+        
+        return ordered_categories
     
     def _format_analysis_response(self, analysis: ReleaseAnalysis) -> str:
         """Format the analysis results for console display with detection details."""
@@ -366,6 +372,8 @@ Please provide input in one of these formats:
             response += f"{', '.join([f'@{contributor}' for contributor in sorted(contributors)])}\n"
         
         return response
+
+
 # Convenience functions for direct usage
 def analyze_github_release(repo_name: str, release_tag: str) -> ReleaseAnalysis:
     """Convenience function to analyze a GitHub release."""
