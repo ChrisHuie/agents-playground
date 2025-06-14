@@ -5,6 +5,8 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass
 import re
 
+from .file_context import FileContextManager, FileContext
+
 
 @dataclass
 class DetectionResult:
@@ -67,38 +69,46 @@ class NewAdaptersModulesDetector(BaseDetector):
     
     def detect(self, pr_info) -> DetectionResult:
         """Detect new adapters/modules based on repo type and file patterns."""
-        if not hasattr(pr_info, 'files') or not pr_info.files:
-            return DetectionResult(detected=False, reason="No files found")
+        # Create file context from pr_info
+        context_manager = FileContextManager()
+        file_context = context_manager.create_file_context(pr_info)
         
-        repo_type = RepositoryTypeDetector.detect_repo_type(pr_info.files)
-        
-        if repo_type == 'javascript':
-            return self._detect_javascript_new_adapter(pr_info)
-        elif repo_type == 'go':
-            return self._detect_go_new_adapter(pr_info)
-        elif repo_type == 'java':
-            return self._detect_java_new_adapter(pr_info)
+        if file_context.repo_type.value == 'javascript':
+            return self._detect_javascript_new_adapter(file_context)
+        elif file_context.repo_type.value == 'go':
+            return self._detect_go_new_adapter(file_context)
+        elif file_context.repo_type.value == 'java':
+            return self._detect_java_new_adapter(file_context)
         else:
-            return DetectionResult(detected=False, reason=f"Unknown repo type: {repo_type}")
+            return DetectionResult(detected=False, reason=f"Unknown repo type: {file_context.repo_type.value}")
     
-    def _detect_javascript_new_adapter(self, pr_info) -> DetectionResult:
-        """Detect new JavaScript adapters/modules."""
-        js_adapter_patterns = [
-            r'modules/[^/]+BidAdapter\.js$',
-            r'modules/[^/]+AnalyticsAdapter\.js$', 
-            r'modules/[^/]+RtdProvider\.js$',
-            r'modules/[^/]+IdSystem\.js$'
-        ]
+    def _detect_javascript_new_adapter(self, file_context) -> DetectionResult:
+        """Detect new JavaScript adapters/modules and aliases."""
+        # First check for aliases (most common in JS)
+        alias_result = self._detect_js_alias(file_context)
+        if alias_result.detected:
+            return alias_result
         
-        new_adapter_files = []
+        # Then check for new adapter files
+        new_adapter_files = [fc.path for fc in file_context.adapter_files 
+                           if fc.status.value == 'added']
         
-        if hasattr(pr_info, 'file_changes'):
-            for file_path, changes in pr_info.file_changes.items():
-                if changes.get('status') == 'added':
-                    for pattern in js_adapter_patterns:
-                        if re.match(pattern, file_path):
-                            new_adapter_files.append(file_path)
-                            break
+        if new_adapter_files:
+            # Filter for actual adapter patterns
+            js_adapter_patterns = [
+                r'modules/[^/]+BidAdapter\.js$',
+                r'modules/[^/]+AnalyticsAdapter\.js$', 
+                r'modules/[^/]+RtdProvider\.js$',
+                r'modules/[^/]+IdSystem\.js$'
+            ]
+            
+            actual_adapters = []
+            for file_path in new_adapter_files:
+                for pattern in js_adapter_patterns:
+                    if re.match(pattern, file_path):
+                        actual_adapters.append(file_path)
+                        break
+            new_adapter_files = actual_adapters
         
         if new_adapter_files:
             return DetectionResult(
@@ -108,35 +118,33 @@ class NewAdaptersModulesDetector(BaseDetector):
                 reason=f"New JS adapter files created: {len(new_adapter_files)} files"
             )
         
-        return DetectionResult(detected=False, reason="No new JS adapter files found")
+        return DetectionResult(detected=False, reason="No new JS adapters or aliases found")
     
-    def _detect_go_new_adapter(self, pr_info) -> DetectionResult:
+    def _detect_go_new_adapter(self, file_context) -> DetectionResult:
         """Detect new Go adapters (including aliases)."""
         # Check for alias configurations first
-        alias_result = self._detect_go_alias(pr_info)
+        alias_result = self._detect_go_alias(file_context)
         if alias_result.detected:
             return alias_result
         
         # Check for new analytics adapters
-        analytics_result = self._detect_go_analytics_adapter(pr_info)
+        analytics_result = self._detect_go_analytics_adapter(file_context)
         if analytics_result.detected:
             return analytics_result
         
         # Check for new bidder adapters
-        bidder_result = self._detect_go_bidder_adapter(pr_info)
+        bidder_result = self._detect_go_bidder_adapter(file_context)
         if bidder_result.detected:
             return bidder_result
         
         return DetectionResult(detected=False, reason="No new Go adapters found")
     
-    def _detect_go_alias(self, pr_info) -> DetectionResult:
+    def _detect_go_alias(self, file_context) -> DetectionResult:
         """Detect Go adapter aliases."""
-        if not hasattr(pr_info, 'file_changes'):
-            return DetectionResult(detected=False, reason="No file changes data")
-        
-        for file_path, changes in pr_info.file_changes.items():
-            if file_path.startswith('static/bidder-info/') and file_path.endswith('.yaml'):
-                patch = changes.get('patch', '')
+        # Check config files for alias patterns
+        for file_change in file_context.config_files:
+            if file_change.path.startswith('static/bidder-info/') and file_change.path.endswith('.yaml'):
+                patch = file_change.patch or ''
                 if patch:
                     alias_patterns = [
                         '+aliasOf:', '+ aliasOf:', '+  aliasOf:',
@@ -147,21 +155,17 @@ class NewAdaptersModulesDetector(BaseDetector):
                         if pattern in patch:
                             return DetectionResult(
                                 detected=True,
-                                metadata={'file': file_path, 'type': 'go_alias'},
-                                reason=f"Go alias configuration found in {file_path}"
+                                metadata={'file': file_change.path, 'type': 'go_alias'},
+                                reason=f"Go alias configuration found in {file_change.path}"
                             )
         
         return DetectionResult(detected=False, reason="No Go alias patterns found")
     
-    def _detect_go_analytics_adapter(self, pr_info) -> DetectionResult:
+    def _detect_go_analytics_adapter(self, file_context) -> DetectionResult:
         """Detect new Go analytics adapters."""
-        if not hasattr(pr_info, 'file_changes'):
-            return DetectionResult(detected=False, reason="No file changes data")
-        
-        analytics_files = []
-        for file_path, changes in pr_info.file_changes.items():
-            if changes.get('status') == 'added' and file_path.startswith('analytics/'):
-                analytics_files.append(file_path)
+        # Check adapter files for analytics patterns
+        analytics_files = [fc.path for fc in file_context.adapter_files 
+                          if fc.status.value == 'added' and fc.path.startswith('analytics/')]
         
         if len(analytics_files) >= 2:
             return DetectionResult(
@@ -172,21 +176,23 @@ class NewAdaptersModulesDetector(BaseDetector):
         
         return DetectionResult(detected=False, reason="Insufficient analytics files for new adapter")
     
-    def _detect_go_bidder_adapter(self, pr_info) -> DetectionResult:
+    def _detect_go_bidder_adapter(self, file_context) -> DetectionResult:
         """Detect new Go bidder adapters."""
-        if not hasattr(pr_info, 'file_changes'):
-            return DetectionResult(detected=False, reason="No file changes data")
-        
         new_adapter_dirs = set()
-        for file_path, changes in pr_info.file_changes.items():
-            if changes.get('status') == 'added':
+        
+        # Check added adapter files
+        for file_change in file_context.adapter_files:
+            if file_change.status.value == 'added':
                 # Check for new adapter implementation
-                match = re.match(r'adapters/([^/]+)/\1\.go$', file_path)
+                match = re.match(r'adapters/([^/]+)/\1\.go$', file_change.path)
                 if match:
                     new_adapter_dirs.add(match.group(1))
-                
+        
+        # Check added config files
+        for file_change in file_context.config_files:
+            if file_change.status.value == 'added':
                 # Check for new bidder config
-                match = re.match(r'static/bidder-info/([^/]+)\.yaml$', file_path)
+                match = re.match(r'static/bidder-info/([^/]+)\.yaml$', file_change.path)
                 if match:
                     new_adapter_dirs.add(match.group(1))
         
@@ -199,45 +205,93 @@ class NewAdaptersModulesDetector(BaseDetector):
         
         return DetectionResult(detected=False, reason="No new Go bidder adapters found")
     
-    def _detect_java_new_adapter(self, pr_info) -> DetectionResult:
+    def _detect_js_alias(self, file_context) -> DetectionResult:
+        """Detect JavaScript bid adapter aliases."""
+        # Look for modifications to BidAdapter files
+        for file_change in file_context.adapter_files:
+            if (file_change.status.value == 'modified' and 
+                'modules/' in file_change.path and 
+                'BidAdapter.js' in file_change.path):
+                
+                patch = file_change.patch or ''
+                if patch and self._has_js_alias_patterns(patch, file_change.path):
+                    return DetectionResult(
+                        detected=True,
+                        metadata={'file': file_change.path, 'type': 'js_alias'},
+                        reason=f"JS alias addition detected in {file_change.path}"
+                    )
+        
+        return DetectionResult(detected=False, reason="No JS alias patterns found")
+    
+    def _has_js_alias_patterns(self, patch: str, file_path: str) -> bool:
+        """Check for JavaScript alias patterns in BidAdapter patches."""
+        # Pattern 1: Adding to ALIASES array with objects
+        # { code: 'aliasname', gvlid: 123 }
+        if re.search(r'^\+.*\{\s*code:\s*[\'\"][\w-]+[\'\"].*\}', patch, re.MULTILINE):
+            return True
+        
+        # Pattern 2: Adding to aliases property (simple array)
+        # aliases: ['alias1', 'alias2']
+        if re.search(r'^\+.*aliases:\s*\[.*[\'\"][\w-]+[\'\"].*\]', patch, re.MULTILINE):
+            return True
+        
+        # Pattern 3: Adding individual alias strings to existing array
+        # + 'newalias',
+        if re.search(r'^\+\s*[\'\"][\w-]+[\'\"]\s*,?\s*$', patch, re.MULTILINE):
+            # Additional check: make sure we're in an aliases context
+            if 'aliases' in patch.lower() or 'ALIASES' in patch:
+                return True
+        
+        # Pattern 4: Adding to BASE_URLS or ENDPOINTS objects for aliases
+        # aliasname: 'https://...',
+        if re.search(r'^\+\s*[\w-]+:\s*[\'\"]https?://[^\'\"]+[\'\"]\s*,?\s*$', patch, re.MULTILINE):
+            # Check if this is in context of URL mappings
+            if any(keyword in patch for keyword in ['BASE_URLS', 'ENDPOINTS', 'endpoints', 'baseUrl']):
+                return True
+        
+        # Pattern 5: Updates to endpoint selection logic for aliases
+        # ENDPOINTS[bidderCode] or similar patterns
+        if '+' in patch and re.search(r'ENDPOINTS\[.*\]|baseEndpoint.*bidderCode', patch):
+            return True
+        
+        return False
+    
+    def _detect_java_new_adapter(self, file_context) -> DetectionResult:
         """Detect new Java adapters (including aliases)."""
         # Check for alias configurations first (most common)
-        alias_result = self._detect_java_alias(pr_info)
+        alias_result = self._detect_java_alias(file_context)
         if alias_result.detected:
             return alias_result
         
         # Check for new bidder implementations
-        bidder_result = self._detect_java_bidder_adapter(pr_info)
+        bidder_result = self._detect_java_bidder_adapter(file_context)
         if bidder_result.detected:
             return bidder_result
         
         return DetectionResult(detected=False, reason="No new Java adapters found")
     
-    def _detect_java_alias(self, pr_info) -> DetectionResult:
+    def _detect_java_alias(self, file_context) -> DetectionResult:
         """Detect Java adapter aliases."""
-        if not hasattr(pr_info, 'file_changes'):
-            return DetectionResult(detected=False, reason="No file changes data")
-        
-        # Check test-application.properties for alias configs
-        for file_path, changes in pr_info.file_changes.items():
-            if 'test-application.properties' in file_path:
-                patch = changes.get('patch', '')
+        # Check test files for alias configs (test-application.properties)
+        for file_change in file_context.test_files:
+            if 'test-application.properties' in file_change.path:
+                patch = file_change.patch or ''
                 if patch and self._has_java_alias_properties(patch):
                     return DetectionResult(
                         detected=True,
-                        metadata={'file': file_path, 'type': 'java_alias_properties'},
-                        reason=f"Java alias configuration in {file_path}"
+                        metadata={'file': file_change.path, 'type': 'java_alias_properties'},
+                        reason=f"Java alias configuration in {file_change.path}"
                     )
         
-        # Check YAML bidder-config files for alias additions
-        for file_path, changes in pr_info.file_changes.items():
-            if 'src/main/resources/bidder-config/' in file_path and file_path.endswith('.yaml'):
-                patch = changes.get('patch', '')
+        # Check config files for YAML bidder-config alias additions
+        for file_change in file_context.config_files:
+            if 'src/main/resources/bidder-config/' in file_change.path and file_change.path.endswith('.yaml'):
+                patch = file_change.patch or ''
                 if patch and self._has_java_alias_yaml(patch):
                     return DetectionResult(
                         detected=True,
-                        metadata={'file': file_path, 'type': 'java_alias_yaml'},
-                        reason=f"Java alias YAML configuration in {file_path}"
+                        metadata={'file': file_change.path, 'type': 'java_alias_yaml'},
+                        reason=f"Java alias YAML configuration in {file_change.path}"
                     )
         
         return DetectionResult(detected=False, reason="No Java alias patterns found")
@@ -280,33 +334,30 @@ class NewAdaptersModulesDetector(BaseDetector):
         
         return False
     
-    def _detect_java_bidder_adapter(self, pr_info) -> DetectionResult:
+    def _detect_java_bidder_adapter(self, file_context) -> DetectionResult:
         """Detect new Java bidder adapters (full implementations)."""
-        if not hasattr(pr_info, 'file_changes'):
-            return DetectionResult(detected=False, reason="No file changes data")
-        
         # Check for existing bidder file modifications (indicates update, not new)
-        modified_bidder_files = []
-        new_bidder_files = []
+        modified_bidder_files = [fc.path for fc in file_context.adapter_files 
+                               if fc.status.value == 'modified' and 
+                               'src/main/java/org/prebid/server/bidder/' in fc.path and 'Bidder.java' in fc.path]
         
-        for file_path, changes in pr_info.file_changes.items():
-            if 'src/main/java/org/prebid/server/bidder/' in file_path and 'Bidder.java' in file_path:
-                if changes.get('status') == 'modified':
-                    modified_bidder_files.append(file_path)
-                elif changes.get('status') == 'added':
-                    new_bidder_files.append(file_path)
+        new_bidder_files = [fc.path for fc in file_context.adapter_files 
+                          if fc.status.value == 'added' and 
+                          'src/main/java/org/prebid/server/bidder/' in fc.path and 'Bidder.java' in fc.path]
         
         # If modifying existing bidder files, it's likely an update
         if modified_bidder_files and not new_bidder_files:
             return DetectionResult(detected=False, reason="Existing bidder files modified (update, not new)")
         
-        # Count new bidder-related files
+        # Count new bidder-related files (adapter + config files)
         all_new_bidder_files = []
-        for file_path, changes in pr_info.file_changes.items():
-            if changes.get('status') == 'added':
-                if ('src/main/java/org/prebid/server/bidder/' in file_path and 'Bidder.java' in file_path) or \
-                   ('src/main/resources/bidder-config/' in file_path and file_path.endswith('.yaml')):
-                    all_new_bidder_files.append(file_path)
+        all_new_bidder_files.extend(new_bidder_files)
+        
+        # Add new config files
+        config_files = [fc.path for fc in file_context.config_files 
+                       if fc.status.value == 'added' and 
+                       'src/main/resources/bidder-config/' in fc.path and fc.path.endswith('.yaml')]
+        all_new_bidder_files.extend(config_files)
         
         if len(all_new_bidder_files) >= 2:
             return DetectionResult(
@@ -326,26 +377,15 @@ class TestingBuildDocsDetector(BaseDetector):
     
     def detect(self, pr_info) -> DetectionResult:
         """Detect testing, build, or documentation changes."""
-        if not hasattr(pr_info, 'files') or not pr_info.files:
-            return DetectionResult(detected=False, reason="No files found")
+        # Create file context from pr_info
+        context_manager = FileContextManager()
+        file_context = context_manager.create_file_context(pr_info)
         
+        # Gather all test/build/docs files from categorized context
         test_build_docs_files = []
-        
-        for file_path in pr_info.files:
-            file_lower = file_path.lower()
-            if any(pattern in file_lower for pattern in [
-                'src/test/', '/test/', '.test.', '_test.', 'spec/',
-                '.github/', 'ci/', '.ci/', 'workflow/', 'pipeline/',
-                'dockerfile', 'makefile', 'gulpfile', 'webpack',
-                'package.json', 'pom.xml', 'build.gradle', 'go.mod',
-                'readme', 'license', '.md', 'docs/', 'documentation/',
-                'changelog', 'contributing', '.yml', '.yaml',
-                'eslint', 'prettier', '.gitignore', '.editorconfig'
-            ]) and not any(exclude in file_lower for exclude in [
-                'src/main/java/org/prebid/server/bidder/',
-                'modules/', 'adapters/', 'static/bidder-info/'
-            ]):
-                test_build_docs_files.append(file_path)
+        test_build_docs_files.extend([fc.path for fc in file_context.test_files])
+        test_build_docs_files.extend([fc.path for fc in file_context.build_files])
+        test_build_docs_files.extend([fc.path for fc in file_context.doc_files])
         
         if test_build_docs_files:
             return DetectionResult(
@@ -368,10 +408,14 @@ class AdapterModuleChangesDetector(BaseDetector):
     
     def detect(self, pr_info) -> DetectionResult:
         """Detect adapter/module changes and determine if feature or update."""
-        if not self._is_adapter_or_module_change(pr_info):
+        # Create file context from pr_info
+        context_manager = FileContextManager()
+        file_context = context_manager.create_file_context(pr_info)
+        
+        if not self._is_adapter_or_module_change(file_context):
             return DetectionResult(detected=False, reason="Not an adapter/module change")
         
-        is_new_feature = self._is_new_feature_change(pr_info)
+        is_new_feature = self._is_new_feature_change(file_context)
         
         if self.is_feature and is_new_feature:
             return DetectionResult(
@@ -388,31 +432,20 @@ class AdapterModuleChangesDetector(BaseDetector):
         
         return DetectionResult(detected=False, reason=f"Not a {'feature' if self.is_feature else 'update'}")
     
-    def _is_adapter_or_module_change(self, pr_info) -> bool:
+    def _is_adapter_or_module_change(self, file_context: FileContext) -> bool:
         """Check if PR affects adapter/module files."""
-        if not hasattr(pr_info, 'files') or not pr_info.files:
-            return False
-        
-        for file_path in pr_info.files:
-            file_lower = file_path.lower()
-            if any(pattern in file_lower for pattern in [
-                'modules/', 'adapters/', 'bidder/', 'analytics/',
-                'bidderadapter', 'analyticsadapter', 'rtdprovider', 'idsystem',
-                'src/main/java/org/prebid/server/bidder/',
-                'src/main/resources/bidder-config/',
-                'static/bidder-info/'
-            ]):
-                return True
-        
-        return False
+        return len(file_context.adapter_files) > 0
     
-    def _is_new_feature_change(self, pr_info) -> bool:
+    def _is_new_feature_change(self, file_context: FileContext) -> bool:
         """Determine if this is a new feature based on file creation vs modification."""
-        if not hasattr(pr_info, 'file_changes') or not pr_info.file_changes:
-            return False
+        # Count added vs modified files across all categories
+        all_files = (
+            file_context.adapter_files + file_context.test_files + file_context.config_files +
+            file_context.core_files + file_context.build_files + file_context.doc_files + file_context.other_files
+        )
         
-        added_files = sum(1 for changes in pr_info.file_changes.values() if changes.get('status') == 'added')
-        modified_files = sum(1 for changes in pr_info.file_changes.values() if changes.get('status') == 'modified')
+        added_files = sum(1 for fc in all_files if fc.status.value == 'added')
+        modified_files = sum(1 for fc in all_files if fc.status.value == 'modified')
         
         return added_files > modified_files
 
@@ -428,10 +461,14 @@ class CoreChangesDetector(BaseDetector):
     
     def detect(self, pr_info) -> DetectionResult:
         """Detect core changes and determine if feature or update."""
-        if not self._is_core_change(pr_info):
+        # Create file context from pr_info
+        context_manager = FileContextManager()
+        file_context = context_manager.create_file_context(pr_info)
+        
+        if not self._is_core_change(file_context):
             return DetectionResult(detected=False, reason="Not a core change")
         
-        is_new_feature = self._is_new_feature_change(pr_info)
+        is_new_feature = self._is_new_feature_change(file_context)
         
         if self.is_feature and is_new_feature:
             return DetectionResult(
@@ -448,40 +485,9 @@ class CoreChangesDetector(BaseDetector):
         
         return DetectionResult(detected=False, reason=f"Not a core {'feature' if self.is_feature else 'update'}")
     
-    def _is_core_change(self, pr_info) -> bool:
+    def _is_core_change(self, file_context: FileContext) -> bool:
         """Check if PR affects core system files."""
-        if not hasattr(pr_info, 'files') or not pr_info.files:
-            return False
-        
-        for file_path in pr_info.files:
-            file_lower = file_path.lower()
-            if any(pattern in file_lower for pattern in [
-                'src/main/java/org/prebid/server/auction',
-                'src/main/java/org/prebid/server/cache',
-                'src/main/java/org/prebid/server/currency',
-                'src/main/java/org/prebid/server/privacy',
-                'src/main/java/org/prebid/server/floors',
-                'src/main/java/org/prebid/server/deals',
-                'src/main/java/org/prebid/server/validation',
-                'src/main/java/org/prebid/server/handler',
-                'src/auction',
-                'src/targeting',
-                'src/utils',
-                'libraries/',
-                'endpoints/',
-                'exchange/',
-                'stored_requests/',
-                'privacy/',
-                'currency/',
-                'config/',
-            ]) and not any(exclude in file_lower for exclude in [
-                'bidder/', 'adapters/', 'modules/', 'analytics/',
-                'test/', '/test/', '.test.', '_test.', 'spec/',
-                '.github/', '.md', 'docs/', 'readme', 'changelog'
-            ]):
-                return True
-        
-        return False
+        return len(file_context.core_files) > 0
     
     def _is_new_feature_change(self, pr_info) -> bool:
         """Determine if this is a new feature based on file creation vs modification."""
